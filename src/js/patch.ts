@@ -476,7 +476,8 @@ async function shuffleInternal(rom: Uint8Array,
 
   const hasGraphics = spriteReplacements?.some((spr) => Sprite.isCustom(spr)) || false;
 
-  const crc = stampVersionSeedAndHash(rom, originalSeed, originalFlagString, prgCopy, hasGraphics);
+  const crc = stampVersionSeedAndHash(rom, originalSeed, originalFlagString, prgCopy, hasGraphics,
+                                      flags.coop());
 
   // Do optional randomization now...
   if (flags.randomizeMusic('late')) {
@@ -773,19 +774,27 @@ const storyMode = (rom: Rom) => {
   rom.npcs[0xcb].spawnConditions.get(0xa6)!.push(...conditions);
 };
 
+// Version of the two-player co-op patch (flag Cp), shown on the title screen.
+export const COOP_VERSION = '0.1';
+
 // Stamp the ROM
 export function stampVersionSeedAndHash(rom: Uint8Array,
                                         seed: number,
                                         flagString: string,
                                         early: Uint8Array,
-                                        hasGraphics: boolean): number {
+                                        hasGraphics: boolean,
+                                        coop = false): number {
   // Use up to 26 bytes starting at PRG $25ea8
   // Would be nice to store (1) commit, (2) flags, (3) seed, (4) hash
   // We can use base64 encoding to help some...
   // For now just stick in the commit and seed in simple hex
   const crc = crc32(early);
   const crcString = crc.toString(16).padStart(8, '0').toUpperCase();
-  const hash = version.STATUS === 'unstable' ?
+  // Co-op builds show the co-op version instead, so two players can check
+  // they have the same patch before connecting (netplay needs identical
+  // ROMs).
+  const hash = coop ? `COOP ${COOP_VERSION}`.padEnd(12, ' ') :
+      version.STATUS === 'unstable' ?
       version.HASH.substring(0, 7).padStart(7, '0').toUpperCase() + '     ' :
       version.VERSION.substring(0, 12).padEnd(12, ' ');
   const seedStr = seed.toString(16).padStart(8, '0').toUpperCase();
@@ -846,7 +855,11 @@ export function stampVersionSeedAndHash(rom: Uint8Array,
 
   // embed(0x25ea8, `v.${hash}   ${seed}`);
   embed(0x25716, 'RANDOMIZER');
-  if (version.STATUS === 'unstable') embed(0x2573c, 'BETA');
+  if (coop) {
+    embed(0x2573c, 'COOP'); // under RANDOMIZER on the title screen
+  } else if (version.STATUS === 'unstable') {
+    embed(0x2573c, 'BETA');
+  }
   // NOTE: it would be possible to add the hash/seed/etc to the title
   // page as well, but we'd need to replace the unused letters in bank
   // $1d with the missing numbers (J, Q, W, X), as well as the two
