@@ -244,5 +244,9 @@ PatchClearEnemyHPRam:
 -   sta EnemyHPRamStart,y
     dey
     bpl -
+.ifdef _COOP
+  jmp CoopInitOnReset ; clears co-op RAM, then ValidateSaveFiles (coop.s)
+.else
   jmp $f0a4 ; ValidateSaveFiles
+.endif
 .endif
