@@ -45,7 +45,11 @@ local s = {warps = 0}
 -- Work done at the safe point each frame (set by the steps).
 local atSafePoint = nil
 emu.addMemoryCallback(function() mode8Hits = mode8Hits + 1 end, EXEC, 0xcb62, 0xcb62)
+-- Values that player 2 swaps in during their update (PlayerStatus,
+-- PlayerHP) are only meaningful at the safe point, never mid-frame.
+local SAFE = {}
 emu.addMemoryCallback(function()
+  SAFE.status, SAFE.hp, SAFE.gm = rd(0x0710), rd(0x03c1), rd(0x41)
   if atSafePoint then pcall(atSafePoint) end
 end, EXEC, 0xcb6e, 0xcb6e)
 
@@ -125,7 +129,7 @@ local steps = {
     if since() == 30 then
       if rd(P2Slot) == 0 then return fail("player 2 did not spawn") end
       if rd(P2HP) == 0 or rd(P2HP) ~= rd(PlayerMaxHP) then return fail("P2HP not full on join") end
-      s.p1hp = rd(PlayerHP)
+      s.p1hp = SAFE.hp
       return nextStep(string.format("joined with P2HP %d", rd(P2HP)))
     end
   end,
@@ -147,7 +151,7 @@ local steps = {
     if since() % 12 < 2 then pad2 = {b = true} end
     local hp, act = rd(0x03c0 + s.e), rd(0x04a0 + s.e)
     if act ~= s.act0 or hp < s.hp0 then
-      if rd(PlayerHP) ~= s.p1hp then return fail("player 1 lost HP") end
+      if SAFE.hp ~= s.p1hp then return fail("player 1 lost HP") end
       shot("m3_hit.png")
       local exp = rd(0x0704) + 256 * rd(0x0705)
       return nextStep(string.format("enemy hit by player 2: HP %d -> %d, action %02x -> %02x, exp %d -> %d",
@@ -160,14 +164,14 @@ local steps = {
     if since() == 1 then
       s.e = findEnemy()
       if not s.e then return fail("no enemy left") end
-      s.p2hp, s.p1hp = rd(P2HP), rd(PlayerHP)
+      s.p2hp, s.p1hp = rd(P2HP), SAFE.hp
       wr(P2Invuln, 0)
       log(string.format("  enemy slot %02x action %02x attack %d", s.e, rd(0x04a0 + s.e), rd(0x03e0 + s.e)))
       atSafePoint = function() putNearP2(s.e, 0, 0) end
     end
     if rd(P2HP) < s.p2hp then
-      if rd(PlayerHP) ~= s.p1hp then return fail("PlayerHP changed too") end
-      return nextStep(string.format("P2HP %d -> %d, PlayerHP still %d", s.p2hp, rd(P2HP), rd(PlayerHP)))
+      if SAFE.hp ~= s.p1hp then return fail("PlayerHP changed too") end
+      return nextStep(string.format("P2HP %d -> %d, PlayerHP still %d", s.p2hp, rd(P2HP), SAFE.hp))
     end
     if since() > 300 then return fail("the enemy never hurt player 2") end
   end,
@@ -179,15 +183,15 @@ local steps = {
       if not (s.e and rd(0x04a0 + s.e) ~= 0) then s.e = findEnemy() end
       if not s.e then return fail("no enemy left") end
       wr(0x0420 + s.e, rd(0x0420 + s.e) | 0x80)
-      s.status, s.hits, s.lastHP = rd(0x0710), 0, rd(P2HP)
+      s.status, s.hits, s.lastHP = SAFE.status, 0, rd(P2HP)
       atSafePoint = function()
         if rd(0x04a0 + s.e) ~= 0 then putNearP2(s.e, 0, 0) end
         wr(P2Invuln, 0)
         if rd(P2HP) < 20 then wr(P2HP, 40) end
       end
     end
-    if rd(0x41) == 0x10 then return fail("game switched to the status message") end
-    if rd(0x0710) ~= s.status then return fail(string.format("PlayerStatus changed %02x -> %02x", s.status, rd(0x0710))) end
+    if SAFE.gm == 0x10 then return fail("game switched to the status message") end
+    if SAFE.status ~= s.status then return fail(string.format("PlayerStatus changed %02x -> %02x", s.status, SAFE.status)) end
     if rd(P2HP) < s.lastHP then s.hits = s.hits + 1 end
     s.lastHP = rd(P2HP)
     if since() == 300 then
@@ -198,7 +202,7 @@ local steps = {
   -- 6: at 0 HP player 2 is down (still joined); player 1 is unaffected.
   function()
     if since() == 1 then
-      s.p1hp = rd(PlayerHP)
+      s.p1hp = SAFE.hp
       atSafePoint = function()
         if rd(P2Down) == 0 then
           wr(P2HP, 1); wr(P2Invuln, 0)
@@ -210,7 +214,7 @@ local steps = {
     if rd(P2Down) ~= 0 then
       if rd(P2HP) ~= 0 then return fail("down with HP left") end
       if rd(P2Active) ~= 1 then return fail("P2Active lost") end
-      if rd(PlayerHP) ~= s.p1hp then return fail("PlayerHP changed") end
+      if SAFE.hp ~= s.p1hp then return fail("PlayerHP changed") end
       shot("m3_down.png")
       return nextStep("player 2 is down, still joined")
     end

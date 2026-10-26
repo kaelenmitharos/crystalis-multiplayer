@@ -74,7 +74,8 @@ P2HudHP       = $62c9  ; P2HP / P2MaxHP as last drawn in the status bar
 P2HudMax      = $62ca
 P2HudState    = $62cb  ; nonzero: player 2's readout is on screen
 P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
-;;; $62cd..$62db spare
+CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
+;;; $62ce..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -298,6 +299,60 @@ CoopHpGuard:
   pla        ; X saved by UpdateHPDisplayInternal
   tax
   rts        ; return from UpdateHPDisplayInternal itself
+
+;;; Charge shots (M3b).  The hero's charge shots spawn through
+;;; AdHocSpawnObject, whose AdHocSpawns entries ($bc00, bank $14) give each
+;;; shot a slot range [start, end) that always starts at 4 (up to $08 or
+;;; $0c; Fire 2, Flame and Storm use slot 4 only).  Its one call to
+;;; FindEmptySpawnSlot ($98b9) is redirected here: while player 2 is
+;;; joined, player 1's shots use slots 4..7 and player 2's (spawned while
+;;; their update runs) use 8..$b.  The vanilla collision pass already
+;;; checks all of 4..$b against enemies, so player 2's shots need nothing
+;;; more.
+;;;
+;;; ChargeIndicatorDisplay ($8d59) draws the hero's charge meter (and
+;;; waits for the nametable buffer).  Its call in action $03 is redirected
+;;; to a guard that skips it while player 2's update runs, so player 2 can
+;;; charge without drawing over player 1's meter.
+.pushseg "1a"
+.org $9779 ; in AdHocSpawnObject: was jsr FindEmptySpawnSlot
+  jsr CoopFindSlot
+.org $9ef5 ; in ObjectActionJump_03: was jsr ChargeIndicatorDisplay
+  jsr CoopChargeGuard
+.popseg
+
+.reloc
+CoopChargeGuard:
+  lda CoopP2Running
+  bne +
+  jmp $8d59 ; ChargeIndicatorDisplay
++ rts
+
+.reloc
+CoopFindSlot:
+  cpy #$04           ; only the hero's shots start at slot 4
+  bne @go
+  lda P2Active
+  beq @go
+  lda CoopP2Running
+  bne @p2
+  lda $10            ; player 1: 4..7
+  cmp #$09
+  bcc @go
+  lda #$08
+  sta $10
+  bne @go            ; (always)
+@p2:
+  ldy #$08           ; player 2: the same range moved up by 4, within 8..$b
+  lda $10
+  clc
+  adc #$04
+  cmp #$0d
+  bcc +
+   lda #$0c
++ sta $10
+@go:
+  jmp $98b9 ; FindEmptySpawnSlot
 
 .pushseg "3a" ; COOP_BANK
 
@@ -784,8 +839,8 @@ CoopUpdateP2:
   sta CoopSave61fd
   lda P2Held
   and #$7f         ; no A yet.  B held starts the swing (action $03 sets the
-  sta $43          ; sword timer); it can't charge, because the odd
-                   ; GlobalCounter below skips the charge step (M3b)
+  sta $43          ; sword timer; holding it charges, and releasing it
+                   ; fires a charge shot into slots 8..$b (M3b)
   and #$0f
   tay
   lda $fed0,y      ; DirectionsByDpadBits
@@ -795,18 +850,14 @@ CoopUpdateP2:
   sta $4b
   lda #$00
   sta $61fd        ; never consume player 1's trigger-skip latch
-  ;; Make GlobalCounter odd while player 2 runs.  Action $03 calls
-  ;; ChargeIndicatorDisplay when (GlobalCounter & 3) == 0; for player 2
-  ;; that would draw their charge over player 1's meter and wait for the
-  ;; nametable buffer, which cost a whole frame (measured: 32% lag frames
-  ;; in a busy room).  GlobalCounter is only changed by the main loop, so
-  ;; restoring it afterwards is exact.
-  lda $08
-  pha
-  ora #$01
-  sta $08
-  ;; Player 2's status for their update: action $01 picks the speed from
-  ;; it (paralysis is slow) and the slime sprite for curse.
+  ;; While player 2 runs (CoopP2Running), CoopChargeGuard skips the charge
+  ;; meter, which would draw player 2's charge over player 1's and wait
+  ;; for the nametable buffer (it cost 32% lag frames in M2a), and
+  ;; CoopFindSlot puts player 2's charge shots in slots 8..$b.
+  lda #$01
+  sta CoopP2Running
+  ;; Player 2's status for their update: action $01 picks the slime
+  ;; sprite and speed for curse.
   lda $0710          ; PlayerStatus
   ldy P2Status
   sta P2Status
@@ -817,8 +868,8 @@ CoopUpdateP2:
   ldy P2Status
   sta P2Status
   sty $0710
-  pla
-  sta $08
+  lda #$00
+  sta CoopP2Running
   ;; Swap back.
   jsr CoopSwapP2
   lda CoopSave43

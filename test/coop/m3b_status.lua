@@ -45,7 +45,11 @@ local s = {warps = 0}
 -- Work done at the safe point each frame (set by the steps).
 local atSafePoint = nil
 emu.addMemoryCallback(function() mode8Hits = mode8Hits + 1 end, EXEC, 0xcb62, 0xcb62)
+-- Values that player 2 swaps in during their update (PlayerStatus,
+-- PlayerHP) are only meaningful at the safe point, never mid-frame.
+local SAFE = {}
 emu.addMemoryCallback(function()
+  SAFE.status, SAFE.hp, SAFE.gm = rd(0x0710), rd(0x03c1), rd(0x41)
   if atSafePoint then pcall(atSafePoint) end
 end, EXEC, 0xcb6e, 0xcb6e)
 
@@ -101,11 +105,11 @@ local P2Status, PlayerStatus = 0x6286, 0x0710
 local function status(v) return v & 0x0f end
 -- Checks that must hold on every frame of the test.
 local function invariants()
-  if rd(0x41) == 0x10 then return "the game switched to the status message" end
-  if s.p1status and rd(PlayerStatus) ~= s.p1status then
-    return string.format("PlayerStatus changed %02x -> %02x", s.p1status, rd(PlayerStatus))
+  if SAFE.gm == 0x10 then return "the game switched to the status message" end
+  if s.p1status and SAFE.status ~= s.p1status then
+    return string.format("PlayerStatus changed %02x -> %02x", s.p1status, SAFE.status)
   end
-  if s.p1hp and rd(PlayerHP) ~= s.p1hp then return "PlayerHP changed" end
+  if s.p1hp and SAFE.hp ~= s.p1hp then return "PlayerHP changed" end
   return nil
 end
 -- Turn enemy e into a status shot (as vanilla projectiles are: $0540 = $ff,
