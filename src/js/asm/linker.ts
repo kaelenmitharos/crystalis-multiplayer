@@ -645,7 +645,7 @@ class Link {
         const v = this.resolveExpr(a);
         if (v) continue;
         const at = Token.at(a);
-        throw new Error(`Assertion failed${at}`);
+        throw new Error(`Assertion failed${at} in chunk ${c.name ?? "?"} (${c.segments.join(",")})`);
       }
       if (c.overlaps) continue;
       patch.set(c.offset!, ...this.data.slice(c.offset!, c.offset! + c.size!));

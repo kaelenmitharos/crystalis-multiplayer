@@ -10,7 +10,8 @@
 
 .ifdef _COOP
 
-;;; Battery RAM block reserved for co-op: $6280..$62bf (64 bytes).
+;;; Battery RAM block reserved for co-op: $6280..$62db (92 bytes; M3
+;;; extended it from $62bf).
 ;;;
 ;;; Picked after auditing $6160..$62ef, which is unused in vanilla:
 ;;;  - $61fb..$61ff are used by the randomizer (WarriorRingStabCounter,
@@ -25,7 +26,7 @@
 ;;; session.  CoopClearRam zeroes it on every reset and whenever a game
 ;;; starts (new game or continue), so nothing depends on old values.
 CoopRamStart  = $6280
-CoopRamEnd    = $62c0
+CoopRamEnd    = $62dc  ; exclusive: $62dc itself is read by spawn.s
 
 P2Active      = $6280  ; 0 = player 2 not joined, 1 = joined
 P2HP          = $6281  ; current HP
@@ -59,7 +60,16 @@ CoopDY        = $62b8  ; 2 bytes: |A.y - B.y| (screens are 240 px tall)
 CoopDX0       = $62ba  ; 2 bytes: previous distances, for the leash
 CoopDY0       = $62bc
 CoopTmp       = $62be  ; 2 bytes scratch
-;;; ($62bf is the last byte of the block)
+;;; M3 (player 2 fights):
+P2Invuln      = $62c0  ; player 2's invincibility timer (like $071a)
+P2SwordSlot   = $62c1  ; object slot holding player 2's sword, 0 = none
+P2SwordPlane  = $62c2  ; collision plane of player 2's sword (upper nibble)
+CoopNoHud     = $62c3  ; nonzero: skip UpdateHPDisplayInternal (player 2 hit)
+P2Down        = $62c4  ; nonzero: player 2 is down (0 HP, frozen)
+CoopFarTarget = $62c5  ; 2 bytes: bank $0d routine for CoopCall0d
+CoopFarA      = $62c7  ; A in/out for CoopCall0d
+CoopTarget    = $62c8  ; target slot of player 2's collision
+;;; $62c9..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -206,42 +216,43 @@ CoopUpdateObjects:
    jsr BankSwitch16k
 + rts
 
-;;; Called from bank $3a with player 2 swapped into slots 0 and 1.  The
-;;; extra call level around each action means a "double return"
-;;; (pla/pla/rts) inside it still comes back here, so the swap is undone.
+;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
+;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
+;;; back through CoopFarA; the carry comes back.  The extra call level
+;;; means a "double return" (pla/pla/rts) inside the routine still comes
+;;; back here, so bank $3a is always mapped again before we return.
 .reloc
-CoopRunP2Actions:
+CoopCall0d:
   lda #$0d
-  jsr BankSwitch16k
-  ldx #$00
-  jsr @Action03
-  lda #$0d
-  jsr BankSwitch16k
-  ldx #$01
-  jsr @Action01
+  jsr BankSwitch16k   ; (bank switches only touch A)
+  jsr @go
+  php
+  sta CoopFarA
   lda #COOP_BANK
-  jmp BankSwitch8k_8000 ; returns to the caller in bank $3a
-@Action03:
-  jsr $9d9a ; ObjectActionJump_03 (bank $0d)
+  jsr BankSwitch8k_8000
+  lda CoopFarA
+  plp
   rts
-@Action01:
-  jsr $9b45 ; ObjectActionJump_01 (bank $0d)
-  rts
+@go:
+  lda CoopFarA
+  jmp (CoopFarTarget)
 
-;;; Terrain under the point $34..$37, for placing player 2 (M2b).  Called
-;;; from bank $3a.  Runs the hero's own CheckTerrainUnderObject (bank $0d)
-;;; for slot 0, forcing a lookup without touching $0380.  Result in $20:
-;;; 01 pit, 02 impassable on foot, 04 impassable flying, 20 slide,
-;;; 40 slow, 80 pain.
+;;; Player 2's collisions (M3): after the vanilla collision pass, check
+;;; player 2's body and sword (CoopP2Collisions in bank $3a).
+.org $cb7e
+  jsr CoopCollisions
+
 .reloc
-CoopCheckTerrain:
-  lda #$0d
-  jsr BankSwitch16k
-  ldx #$00
-  lda #$80
-  jsr $9a30 ; CheckTerrainUnderObject (bank $0d)
-  lda #COOP_BANK
-  jmp BankSwitch8k_8000
+CoopCollisions:
+  jsr $8f6e ; CheckAllObjectCollisions (bank $0d)
+  lda P2Slot
+  beq +
+   lda #COOP_BANK
+   jsr BankSwitch8k_8000
+   jsr CoopP2Collisions
+   lda #$0d  ; leave bank $0d mapped, as before
+   jsr BankSwitch16k
++ rts
 
 ;;; Midpoint camera (M2b).  _3e90a calls KeepPlayerInCenterOfScreenIfPossible
 ;;; ($e9ad), which is the only camera code that reads the hero.  While
@@ -260,7 +271,102 @@ CoopCamera:
    jmp CoopCameraFar
 + jmp $e9ad ; KeepPlayerInCenterOfScreenIfPossible
 
+;;; HUD guard (M3): UpdateHPDisplayInternal ($8cc0, bank $1a) draws
+;;; PlayerHP into the status bar.  While player 2's hit is handled,
+;;; PlayerHP holds P2HP, so skip the redraw (CoopNoHud).
+;;; (The guard itself is in the fixed bank: bank $1a has no free space.)
+.pushseg "1a"
+.org $8cc2 ; after txa/pha; was lda #$60 / jsr WaitForNametableBufferAvailable
+  jsr CoopHpGuard
+  nop
+  nop
+.popseg
+.reloc
+CoopHpGuard:
+  lda CoopNoHud
+  bne +
+   lda #$60
+   jmp $c72b ; WaitForNametableBufferAvailable (then back to $8cc5)
++ pla        ; drop our return address
+  pla
+  pla        ; X saved by UpdateHPDisplayInternal
+  tax
+  rts        ; return from UpdateHPDisplayInternal itself
+
 .pushseg "3a" ; COOP_BANK
+
+;;; Calls a bank $0d routine from bank $3a (see CoopCall0d).
+.macro COOP_FAR ADDR
+  lda #<ADDR
+  sta CoopFarTarget
+  lda #>ADDR
+  sta CoopFarTarget+1
+  jsr CoopCall0d
+.endmacro
+
+;;; Slot 2 (the hero's sword) as 36 bytes: 32 object fields + coordinates.
+.macro COOP_PUSH_SLOT2
+  .repeat 32, I
+    lda $0302 + I * $20
+    pha
+  .endrep
+  lda $72
+  pha
+  lda $92
+  pha
+  lda $b2
+  pha
+  lda $d2
+  pha
+.endmacro
+.macro COOP_POP_SLOT2
+  pla
+  sta $d2
+  pla
+  sta $b2
+  pla
+  sta $92
+  pla
+  sta $72
+  .repeat 32, I
+    pla
+    sta $06e2 - I * $20
+  .endrep
+.endmacro
+.macro COOP_COPY_SLOT2_TO_Y
+  .repeat 32, I
+    lda $0302 + I * $20
+    sta $0300 + I * $20, y
+  .endrep
+  lda $72
+  sta $0070,y
+  lda $92
+  sta $0090,y
+  lda $b2
+  sta $00b0,y
+  lda $d2
+  sta $00d0,y
+.endmacro
+
+;;; Runs the hero actions with player 2 swapped into slots 0 and 1.
+.reloc
+CoopRunP2Actions:
+  ldx #$00
+  COOP_FAR $9d9a ; ObjectActionJump_03
+  ldx #$01
+  COOP_FAR $9b45 ; ObjectActionJump_01
+  rts
+
+;;; Terrain under the point $34..$37, for placing player 2 (M2b), using
+;;; the hero's own CheckTerrainUnderObject for slot 0 (forced lookup, no
+;;; update to $0380).  Result in $20: 01 pit, 02 impassable on foot,
+;;; 04 impassable flying, 20 slide, 40 slow, 80 pain.
+CoopCheckTerrain:
+  lda #$80
+  sta CoopFarA
+  ldx #$00
+  COOP_FAR $9a30 ; CheckTerrainUnderObject
+  rts
 
 ;;; Slot 0 fields used by actions $03/$01 (address for slot 0).
 .reloc
@@ -292,6 +398,15 @@ CoopDespawnP2:
 ++ lda #$00
    sta P2Slot
    sta CoopFlags
++ ldx P2SwordSlot   ; and their sword
+  beq +
+   lda $04a0,x
+   cmp #$10
+   bne ++
+    lda #$00
+    sta $04a0,x
+++ lda #$00
+   sta P2SwordSlot
 + rts
 
 ;;; Spawns player 2 as a copy of the hero, at the hero's position, in the
@@ -356,7 +471,18 @@ CoopSpawnP2:
   lda $6c ; CurrentLocation
   sta P2Loc
   jsr CoopPlaceP2  ; one tile beside player 1, on walkable ground
-  sec
+  ;; HP: full on first join; a new map (or the end of a set piece)
+  ;; revives a downed player 2.
+  lda P2Down
+  beq +
+   jsr CoopReviveP2
+   jmp ++
++ lda P2HP
+  bne ++
+   lda $03c0       ; PlayerMaxHP
+   sta P2MaxHP
+   sta P2HP
+++ sec
   rts
 
 ;;; Swaps slot 0's fields with P2Ground, and slot 1's fields with player
@@ -458,6 +584,11 @@ CoopUpdateP2:
   bcs @spawned
   rts             ; no free slot this frame
 @spawned:
+  jsr CoopP2Vitals
+  lda P2Down
+  beq +
+   jmp CoopP2DownFrame
++
   ;; Select on pad 2: back next to player 1.
   lda P2Pressed
   and #$20
@@ -477,6 +608,11 @@ CoopUpdateP2:
   lda P2Held
   and #$0f
   bne @active
+  lda P2Pressed
+  and #$40             ; B: swing
+  bne @active
+  lda P2Ground+10      ; $0600 sword timer (swinging)
+  bne @active
   lda P2Ground+11      ; $0620 jump height
   bne @active
   lda P2Ground+5       ; $0340 knockback (upper nibble)
@@ -486,7 +622,9 @@ CoopUpdateP2:
   bne @active
   lda CoopFlags
   and #COOP_P2_SETTLED
-  bne @after
+  beq @settle
+  jmp @after
+@settle:
   lda CoopFlags
   ora #COOP_P2_SETTLED
   sta CoopFlags
@@ -496,6 +634,19 @@ CoopUpdateP2:
   and #$ff-COOP_P2_SETTLED
   sta CoopFlags
 @run:
+  ;; Sword frame?  Action $01 (re)loads the sword into slot 2 on every
+  ;; frame of a swing (while the sword timer $0600 runs), so player 1's
+  ;; slot 2 is parked on the stack and player 2's new sword is moved to
+  ;; their own slot afterwards.
+  lda P2Pressed
+  and #$40
+  ora P2Ground+10      ; $0600 sword timer
+  sta CoopTmp+1        ; nonzero: sword frame (kept until after the swap)
+  bne @park
+  jmp @parked
+@park:
+  COOP_PUSH_SLOT2
+@parked:
   ;; Swap in player 2: objects, then pad bytes.
   jsr CoopSwapP2
   lda $43
@@ -507,14 +658,15 @@ CoopUpdateP2:
   lda $61fd
   sta CoopSave61fd
   lda P2Held
-  and #$3f         ; no A or B yet (B would swing player 1's sword slot)
-  sta $43
+  and #$7f         ; no A yet.  B held starts the swing (action $03 sets the
+  sta $43          ; sword timer); it can't charge, because the odd
+                   ; GlobalCounter below skips the charge step (M3b)
   and #$0f
   tay
   lda $fed0,y      ; DirectionsByDpadBits
   sta $49
   lda P2Pressed
-  and #$3f
+  and #$7f         ; B pressed swings; no A yet
   sta $4b
   lda #$00
   sta $61fd        ; never consume player 1's trigger-skip latch
@@ -542,6 +694,30 @@ CoopUpdateP2:
   sta $4b
   lda CoopSave61fd
   sta $61fd
+  ;; Sword frame: move what action $01 put in slot 2 to player 2's sword
+  ;; slot, then bring back player 1's slot 2.
+  lda CoopTmp+1
+  bne @unpark
+  jmp @after
+@unpark:
+  lda $04a2
+  cmp #$10           ; a sword was loaded
+  beq @haveSword
+  jmp @pop
+@haveSword:
+  jsr CoopGetSwordSlot
+  bcs @copySword
+  jmp @pop
+@copySword:
+  COOP_COPY_SLOT2_TO_Y
+  lda $03a0,y        ; keep the plane for our own collision check only
+  and #$f0
+  sta P2SwordPlane
+  lda $03a0,y
+  and #$0f
+  sta $03a0,y
+@pop:
+  COOP_POP_SLOT2
 @after:
   ;; Leash (undo whichever move stretched it), then keep player 2 on
   ;; screen.  Usually one distance check: the detailed checks only run
@@ -922,6 +1098,301 @@ CoopPBOnScreen:
   clc
   rts
 
+;;; ----------------------------------------------------------------
+;;; Player 2 fights (M3a).
+;;;
+;;; Findings (written up from the vanilla code):
+;;;  - CheckAllObjectCollisions ($8f6e, bank $0d) runs at the end of game
+;;;    mode 8, after drawing.  It walks CollisionTable ($96f1): source
+;;;    slot, target range $0d..$1e, handler.  Even frames run entries 7..0
+;;;    (shots 4..8, paralysis beam $0c, hero body 1, hero front 3); odd
+;;;    frames run $e..8 (shots 9..$b, beam, sword 2, body, front).
+;;;    CheckHitbox ($95f8) returns the first target that shares a plane
+;;;    (upper nibble of $03a0) and overlaps, using the draw pass's screen
+;;;    coordinates ($05c0/$05e0).  The whole vanilla pass costs ~1500
+;;;    cycles in a busy room.
+;;;  - Enemy hits hero (CollisionJump_01, $9357, X = 1): status into
+;;;    PlayerStatus; knockback into slots 1 and 0 and $0640 = $ff; attacker
+;;;    in $0541; damage into ObjectHP,x = $03c1 (PlayerHP); invincibility
+;;;    $071a = $1e plus $0381:04 (ticked down in CheckPassiveEffects); then
+;;;    UpdateHPDisplayInternal.  Coins (target action $7b) are picked up
+;;;    here too.  Chests, triggers and NPCs are front (slot 3) collisions.
+;;;  - Sword hits enemy (CollisionJump_00, $90aa, X = sword): damage from
+;;;    PlayerAttack + the sword object's attack and element; kills give XP
+;;;    and may level up (PlayerMaxHP/PlayerHP, HUD).
+;;;  - The sword: action $01 reloads the whole sword object into slot 2 on
+;;;    every frame of a swing; the object loop then runs action $10, a
+;;;    generic x-indexed mover.
+;;;
+;;; So after the vanilla pass we run CheckHitbox ourselves with player 2's
+;;; body slot and (odd frames, like vanilla) sword slot as sources.  Their
+;;; planes are 0 except during these checks, so vanilla never targets
+;;; them.  A sword hit calls CollisionJump_00 with X = player 2's sword
+;;; slot (no swap needed).  An enemy hit swaps player 2 into slots 0/1,
+;;; with $03c1 <-> P2HP, $071a <-> P2Invuln and $0710 <-> P2Status, calls
+;;; CollisionJump_01 with X = 1, and swaps back; the HUD redraw is skipped
+;;; (CoopHpGuard).  Coins are left for player 1.  Game over still only
+;;; comes from player 1's HP.
+
+;;; Keeps player 2's max HP in step with player 1's, and ticks their
+;;; invincibility (bit $04 of their copy of $0381, as vanilla does).
+CoopP2Vitals:
+  lda $03c0          ; PlayerMaxHP
+  sta P2MaxHP
+  cmp P2HP
+  bcs +
+   sta P2HP
++ ldx P2Slot
+  lda P2Invuln
+  beq +
+   dec P2Invuln
+   lda $0380,x
+   ora #$04
+   sta $0380,x
+   rts
++ lda $0380,x
+  and #$fb
+  sta $0380,x
+  rts
+
+;;; Player 2 is down: frozen where they fell, blinking, no collisions and
+;;; no leash.  Player 1 standing within a tile for 60 frames revives them
+;;; (or the next map: see CoopSpawnP2).
+COOP_REVIVE_FRAMES = 60
+CoopP2DownFrame:
+  lda CoopFlags
+  and #$ff-COOP_P1OLD_OK  ; restart the leash after reviving
+  sta CoopFlags
+  jsr CoopSetPAToP1
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  lda CoopDX+1
+  ora CoopDY+1
+  bne @far
+  lda CoopDX
+  cmp #20
+  bcs @far
+  lda CoopDY
+  cmp #20
+  bcs @far
+  inc P2DownTimer
+  lda P2DownTimer
+  cmp #COOP_REVIVE_FRAMES
+  bcc @blink
+  jmp CoopReviveP2
+@far:
+  lda #$00
+  sta P2DownTimer
+@blink:
+  ;; Blink: every 8 frames, move the sprite off screen.
+  jsr CoopSyncP2Sprite
+  lda $08
+  and #$08
+  beq +
+   ldx P2Slot
+   lda #$ff
+   sta $d0,x
++ rts
+
+;;; Back on their feet with a quarter of their max HP.
+CoopReviveP2:
+  lda #$00
+  sta P2Down
+  sta P2DownTimer
+  lda P2MaxHP
+  lsr
+  lsr
+  bne +
+   lda #$01
++ sta P2HP
+  lda #$3c           ; a second of invincibility
+  sta P2Invuln
+  jmp CoopSyncP2Sprite
+
+;;; Y <- player 2's sword slot (reusing it while it still holds their
+;;; sword, else the highest free slot).  Clears carry if none is free.
+CoopGetSwordSlot:
+  ldy P2SwordSlot
+  beq @find
+  lda $04a0,y
+  beq @ok
+  cmp #$10
+  beq @ok
+@find:
+  ldy #COOP_LAST_SLOT
+-  cpy P2Slot
+   beq +
+   lda $04a0,y
+   beq @found
++  dey
+   cpy #COOP_FIRST_SLOT-1
+  bne -
+  lda #$00
+  sta P2SwordSlot
+  clc
+  rts
+@found:
+  sty P2SwordSlot
+@ok:
+  sec
+  rts
+
+;;; Player 2's collision pass, called after the vanilla one.
+.reloc
+CoopP2Collisions:
+  lda P2Down
+  bne @exit
+  lda $41            ; normal play only
+  cmp #$08
+  beq +
+  cmp #$07
+  bne @exit
++ ldx P2Slot
+  lda $04a0,x
+  cmp #COOP_P2_ACTION
+  beq @body
+@exit:
+  rts
+@body:
+  ;; Enemies and their shots touching player 2's body, on even frames
+  ;; (the sword below takes the odd ones), so player 2 adds at most one
+  ;; CheckHitbox per frame.  Measured: checking the body every frame took
+  ;; lag frames from 8% to 17% in the busy-room stress test.
+  lda $08
+  lsr
+  bcs @sword
+  lda P2Invuln
+  bne @sword
+  lda $03a1          ; the hero's collision plane
+  and #$f0
+  ora $03a0,x
+  sta $03a0,x
+  jsr CoopSetRange
+  COOP_FAR $95f8     ; CheckHitbox (X = player 2's slot)
+  php
+  sty CoopTarget
+  ldx P2Slot
+  lda $03a0,x
+  and #$0f
+  sta $03a0,x
+  plp
+  bcc @sword
+  ldy CoopTarget
+  lda $04a0,y
+  and #$7f
+  cmp #$7b           ; a coin: leave it for player 1
+  beq @sword
+  ;; Status projectiles (paralysis, stone, MP drain, curse: $0540 = $ff
+  ;; with a status in $0560) deal no damage in vanilla and only apply a
+  ;; status, which player 2 doesn't have yet (M3b).  The curse path also
+  ;; recomputes player 1's equipment.  So they pass through player 2.
+  lda $0540,y
+  cmp #$ff
+  bne +
+  lda $0560,y
+  bne @sword
++ jsr CoopP2TakeHit
+@sword:
+  ;; Player 2's sword, on odd frames like vanilla's sword entry.
+  lda $08
+  lsr
+  bcc @done
+  ldx P2SwordSlot
+  beq @done
+  lda $04a0,x
+  cmp #$10
+  bne @done
+  lda P2SwordPlane
+  ora $03a0,x
+  sta $03a0,x
+  jsr CoopSetRange
+  COOP_FAR $95f8     ; CheckHitbox (X = player 2's sword)
+  php
+  sty CoopTarget
+  ldx P2SwordSlot
+  lda $03a0,x
+  and #$0f
+  sta $03a0,x
+  plp
+  bcc @done
+  ldy CoopTarget
+  COOP_FAR $90aa     ; CollisionJump_00_SwordHitsEnemy (X = sword, Y = enemy)
+@done:
+  rts
+
+;;; Targets $0d..$1e, as in CollisionTable.
+CoopSetRange:
+  lda #$0c
+  sta $10
+  lda #$1f
+  sta $11
+  rts
+
+;;; Swaps the hero's HP, invincibility timer and status with player 2's.
+CoopSwapVitals:
+  lda $03c1          ; PlayerHP
+  ldy P2HP
+  sta P2HP
+  sty $03c1
+  lda $071a          ; invincibility timer
+  ldy P2Invuln
+  sta P2Invuln
+  sty $071a
+  lda $0710          ; PlayerStatus
+  ldy P2Status
+  sta P2Status
+  sty $0710
+  rts
+
+;;; Enemy CoopTarget hit player 2: run vanilla's handler as player 2.
+CoopP2TakeHit:
+  lda #$01
+  sta CoopNoHud
+  lda $0541          ; per-pass attacker latches, and slot 0's $0640
+  pha
+  lda $0643
+  pha
+  lda $0640
+  pha
+  ;; No status effects for player 2 yet (M3b): PlayerHit_ApplyStatus
+  ;; poisons unless EquippedArmor is Battle Armor, and poisoning sets
+  ;; GameMode $10 (status message) for everyone.  Damage uses the defense
+  ;; values ($0400/$0401), not this byte, so it is unaffected.
+  lda $0713          ; EquippedArmor
+  pha
+  lda #$07           ; ARMOR_BATTLE
+  sta $0713
+  jsr CoopSwapP2
+  jsr CoopSwapVitals
+  ldx #$01
+  ldy CoopTarget
+  COOP_FAR $9357     ; CollisionJump_01_EnemyHitsPlayer
+  jsr CoopSwapVitals
+  jsr CoopSwapP2
+  pla
+  sta $0713
+  pla
+  sta $0640
+  pla
+  sta $0643
+  pla
+  sta $0541
+  lda #$00
+  sta CoopNoHud
+  ;; Knockback lives in player 2's ground copy (driven by action $03);
+  ;; keep it off their sprite slot so the object loop leaves it alone.
+  ldx P2Slot
+  lda $0340,x
+  and #$0f
+  sta $0340,x
+  lda P2HP
+  bne +
+   lda #$01
+   sta P2Down
+   lda #$00
+   sta P2DownTimer
++ rts
+
 ;;; Midpoint camera, entered from CoopCamera (fixed bank) in place of
 ;;; KeepPlayerInCenterOfScreenIfPossible.  That routine reads slot 0's
 ;;; position ($70/$b0), slot 0's on-screen X ($05c0, used to settle the
@@ -935,7 +1406,9 @@ CoopCameraFar:
   beq +
   cmp #$07
   bne @plain
-+ lda $6c
++ lda P2Down       ; a downed player 2 doesn't pull the camera
+  bne @plain
+  lda $6c
   cmp P2Loc
   bne @plain
   ldx P2Slot
