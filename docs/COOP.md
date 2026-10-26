@@ -189,3 +189,13 @@ identical, makes the patch with `scripts/bps.js`, and checks that applying it
 to the source reproduces the build byte for byte. It prints the source,
 output and patch SHA-1s. The `.nes` and `.bps` outputs are gitignored; the
 patch is published on a release.
+
+Tests for the co-op code are in `test/coop/` (Lua scripts for MesenCE and
+Mesen 0.9.9; see each file's header). `test/coop/m4_determinism.lua` checks
+that two runs of the same input give the same RAM, and that the co-op build
+without player 2 plays exactly like the co-op-off build. The same-PC
+netplay test needs RetroArch and Node.js:
+
+```
+test\coop\netplay\run.ps1 -RetroArch C:\path\to\RetroArch-Win64 -Rom release\crystalis-coop-v0.1.nes -Core mesen -Minutes 15
+```

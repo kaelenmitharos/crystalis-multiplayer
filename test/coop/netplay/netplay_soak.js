@@ -30,8 +30,15 @@ const MINUTES = Number(process.argv[2] || 15);
     hp.set({a: true, b: true, start: true}); await sleep(50);
     hp.set({a: true, b: true}); await sleep(150); hp.set({}); await sleep(2500);
   };
-  await warp();
-  log(`wild warp: loc ${(await both(0x6c, 1)).join(' / ')}`);
+  // Warp until we're in normal play away from the opening scene.
+  for (let i = 0; i < 8; i++) {
+    await warp();
+    const [l] = await both(0x6c, 1), [m] = await both(0x40, 2);
+    log(`wild warp: loc ${l} mode ${m}`);
+    if (l && l[0] !== 0 && m && m[0] === 1 && m[1] === 8) break;
+    if (m && m[1] === 9) { hp.set({start: true}); await sleep(50); hp.set({}); await sleep(800); }  // close the status menu
+    await sleep(1000);
+  }
 
   // Port 1 = host pad.
   const [x0] = await both(0x70, 1);
@@ -108,10 +115,20 @@ const MINUTES = Number(process.argv[2] || 15);
   hp.set({}); cp.set({});
   check(zeroMinutes === 0, `soak: ${minute} minutes scored, ${zeroMinutes} with no matching samples; ${locs.size} locations visited`);
 
-  // Control: desync the client on purpose.
-  await sleep(2000);
-  const [cx] = [await cc.read(0x70, 1)];
-  await cc.ask(`WRITE_CORE_MEMORY 70 ${((cx[0] + 40) & 0xff).toString(16)}`, 300);
+  // Control: desync the client on purpose, in normal play (warp first, in
+  // case player 1 died and the game is back at the start).
+  await sleep(1000);
+  await warp();
+  for (let i = 0; i < 20; i++) {
+    const [m] = await both(0x40, 2);
+    if (m && m[0] === 1 && m[1] === 8) break;
+    await sleep(500);
+  }
+  const cx = await cc.read(0x70, 1), cy = await cc.read(0xb0, 1);
+  const nx = (cx[0] + 40) & 0xff, ny = (cy[0] + 24) % 0xe0;
+  await cc.ask(`WRITE_CORE_MEMORY 70 ${nx.toString(16)}`, 300);
+  await cc.ask(`WRITE_CORE_MEMORY b0 ${ny.toString(16)}`, 300);
+  log(`control: client-only write of player 1's position (${cx},${cy}) -> (${nx},${ny}); client reads back ${await cc.read(0x70, 1)},${await cc.read(0xb0, 1)}`);
   const tw = Date.now();
   for (let i = 0; i < 40; i++) {
     hp.set({[DIRS[i % 4]]: true}); cp.set({[DIRS[(i + 1) % 4]]: true}); await sleep(250);
