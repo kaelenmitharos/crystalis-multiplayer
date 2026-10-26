@@ -751,6 +751,16 @@ export class Assembler {
     const nextPc = {op: 'num', num, meta};
     const rel: Expr = {op: '-', args: [expr, nextPc]};
     if (expr.source) rel.source = expr.source;
+    // Range check: an out-of-range branch used to wrap silently into a
+    // branch somewhere else.  Checked now if possible, else at link time.
+    if (arglen === 1) {
+      const inRange: Expr = {op: '&&', args: [
+        {op: '>=', args: [rel, {op: 'num', num: -128}]},
+        {op: '<=', args: [rel, {op: 'num', num: 127}]},
+      ]};
+      if (expr.source) inRange.source = expr.source;
+      this.assert(inRange);
+    }
     this.opcode(op, arglen, rel);
   }
 
@@ -849,6 +859,8 @@ export class Assembler {
         const chunk = this.chunk;
         if (chunk.org != null) {
           pc = ` (PC=$${(chunk.org + chunk.data.length).toString(16)})`;
+        } else {
+          pc = ` (in ${chunk.name ?? "a .reloc chunk"} at +${chunk.data.length})`;
         }
         this.fail(`Assertion failed${pc}`, expr);
       }
