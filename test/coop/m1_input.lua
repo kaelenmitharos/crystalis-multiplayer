@@ -1,23 +1,53 @@
 -- M1 co-op input test (player 2 join/leave, pad 1 shortcuts, reset init).
--- Run with Mesen 0.9.9:  Mesen.exe /testrunner <Cp rom>.nes m1_input.lua
 -- Build the ROM with: --flags="Dn Vmsw Cp" (needs the default controller
 -- shortcuts; a Qc build has no Select+B / Start+A+B shortcuts).
+--
+-- Runs on both emulators:
+--   MesenCE 2.2.x:  Mesen.exe --testRunner --doNotSaveSettings
+--                     --debug.scriptWindow.allowIoOsAccess=true
+--                     --nes.port2.type=NesController m1_input.lua rom.nes
+--   Mesen 0.9.9:    Mesen.exe /testrunner rom.nes m1_input.lua
+-- Notes:
+--  - MesenCE's default config leaves NES port 2 empty, so pad 2 input is
+--    silently dropped without the port2 switch.  allowIoOsAccess is needed
+--    for the log file and screenshots.  --doNotSaveSettings keeps both
+--    switches out of the saved settings.
+--  - From Git Bash, run 0.9.9 with MSYS_NO_PATHCONV=1, or Bash rewrites
+--    "/testrunner" into a file path and the emulator just sits there.
+--  - emu.log output does not reach stdout in either test runner; use the
+--    log file.
+--
 -- Result is the exit code:
 --   0          all checks passed
+--   99         Lua error (see the log)
 --   100 + n    stuck at step n (timeout)
 --   200 + n    check failed at step n
--- Details also go to a log file next to this script if Lua io is available.
+-- Details go to m1_input.log next to this script, and screenshots of the
+-- title and in-game screens to m1_title.png / m1_ingame.png.
 
+local DIR = debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])") or ""
 local LOG = nil
-pcall(function()
-  local dir = debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])") or ""
-  LOG = io.open(dir .. "m1_input.log", "w")
-end)
+pcall(function() LOG = io.open(DIR .. "m1_input.log", "w") end)
 local function log(s) emu.log(s); if LOG then LOG:write(s .. "\n"); LOG:flush() end end
+local function shot(name)
+  pcall(function()
+    local f = io.open(DIR .. name, "wb"); f:write(emu.takeScreenshot()); f:close()
+  end)
+end
 
-local CPU = emu.memType.cpu
+-- API differences between MesenCE (Mesen 2 based) and Mesen 0.9.9.
+local CE = emu.memType.nesMemory ~= nil
+local CPU = CE and emu.memType.nesMemory or emu.memType.cpu
+local EXEC = CE and emu.callbackType.exec or emu.memCallbackType.cpuExec
+-- MesenCE 2.2.1 bug: emu.setInput(input, port) reads the port from the
+-- THIRD argument (ForceParamCount(3) then lua_settop(lua, 4)), so a plain
+-- setInput(t, 1) always drives port 0.  Passing the port twice works.
+local function setPad(port, t)
+  if CE then emu.setInput(t, port, port) else emu.setInput(port, t) end
+end
 local function rd(a) return emu.read(a, CPU) end
 local function wr(a, v) emu.write(a, v, CPU) end
+log("emulator: " .. (CE and "MesenCE" or "Mesen 0.9.x"))
 
 local P2Active, P2Held, P2Pressed = 0x6280, 0x6288, 0x6289
 local MainLoopMode, GameMode, CurLoc = 0x40, 0x41, 0x6c
@@ -27,8 +57,7 @@ local pad1, pad2 = {}, {}
 local mode8Hits = 0          -- executions of the game mode 8 entry ($cb62)
 local done = false
 
-emu.addMemoryCallback(function() mode8Hits = mode8Hits + 1 end,
-                      emu.memCallbackType.cpuExec, 0xcb62)
+emu.addMemoryCallback(function() mode8Hits = mode8Hits + 1 end, EXEC, 0xcb62, 0xcb62)
 
 local function finish(code, msg)
   if done then return end
@@ -161,17 +190,22 @@ local steps = {
 
 emu.addEventCallback(function()
   if done then return end
-  if pad1 then emu.setInput(0, pad1) end
-  if pad2 then emu.setInput(1, pad2) end
+  if pad1 then setPad(0, pad1) end
+  if pad2 then setPad(1, pad2) end
 end, emu.eventType.inputPolled)
 
+local tookTitle = false
 emu.addEventCallback(function()
   if done then return end
   frame = frame + 1
   pad1, pad2 = {}, {}
   table.insert(hist, mode8Hits > lastHits and 1 or 0); lastHits = mode8Hits
   if #hist > 30 then table.remove(hist, 1) end
-  steps[step]()
+  -- Title screen: main loop mode 3, a few seconds in.
+  if not tookTitle and rd(MainLoopMode) == 3 and frame >= 600 then shot("m1_title.png"); tookTitle = true end
+  local ok, err = pcall(steps[step])
+  if not ok then return finish(99, "LUA ERROR " .. tostring(err)) end
+  if step == 2 and since() == 1 then shot("m1_ingame.png") end
   if not done and since() > 4000 then finish(100 + step, "TIMEOUT") end
 end, emu.eventType.startFrame)
 
