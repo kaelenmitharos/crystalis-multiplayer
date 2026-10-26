@@ -24,6 +24,15 @@ function off(num: number, chunk = 0): Expr {
   return {op: 'num', num, meta: {chunk, rel: true}};
 }
 
+// The range check the assembler attaches to a forward relative branch.
+function inRange(sym: number, next: number): Expr {
+  const rel = (): Expr => ({op: '-', args: [{op: 'sym', num: sym}, off(next)]});
+  return {op: '&&', args: [
+    {op: '>=', args: [rel(), {op: 'num', num: -128}]},
+    {op: '<=', args: [rel(), {op: 'num', num: 127}]},
+  ]};
+}
+
 const [] = [str, COMMA, LP, RP, ORG, RELOC, ASSERT, SEGMENT];
 
 describe('Assembler', function() {
@@ -494,6 +503,7 @@ describe('Assembler', function() {
                   expr: {op: '-', args: [{op: 'sym', num: 0}, off(2)]}},
                  {offset: 3, size: 1,
                   expr: {op: '-', args: [{op: 'sym', num: 1}, off(4)]}}],
+          asserts: [inRange(0, 2), inRange(1, 4)],
         }],
         symbols: [{expr: off(4)},
                   {expr: off(6)}],
@@ -532,6 +542,7 @@ describe('Assembler', function() {
           data: Uint8Array.of(0xd0, 0xff, 0x90, 0xfe),
           subs: [{offset: 1, size: 1,
                   expr: {op: '-', args: [{op: 'sym', num: 0}, off(2)]}}],
+          asserts: [inRange(0, 2)],
         }],
         symbols: [{expr: off(2)}],
         segments: []});
@@ -570,10 +581,30 @@ describe('Assembler', function() {
                   expr: {op: '-', args: [{op: 'sym', num: 1}, off(8)]}},
                  {offset: 11, size: 1,
                   expr: {op: '-', args: [{op: 'sym', num: 1}, off(12)]}}],
+          asserts: [inRange(0, 5), inRange(1, 8), inRange(1, 12)],
         }],
         symbols: [{expr: off(5)},
                   {expr: off(15)}],
         segments: []});
+    });
+  });
+
+  describe('Branch range', function() {
+    it('should allow a backward branch of exactly -128', function() {
+      const a = new Assembler(Cpu.P02);
+      a.label('foo');
+      for (let i = 0; i < 126; i++) a.instruction([ident('lsr')]);
+      a.instruction([ident('bne'), ident('foo')]);
+      expect(strip(a.module()).chunks![0].data.slice(-2))
+          .to.eql(Uint8Array.of(0xd0, 0x80));
+    });
+
+    it('should reject a backward branch that is too far', function() {
+      const a = new Assembler(Cpu.P02);
+      a.label('foo');
+      for (let i = 0; i < 127; i++) a.instruction([ident('lsr')]);
+      expect(() => a.instruction([ident('bne'), ident('foo')]))
+          .to.throw(Error, /Assertion failed/);
     });
   });
 
@@ -596,6 +627,7 @@ describe('Assembler', function() {
                   expr: {op: '-', args: [{op: 'sym', num: 0}, off(2)]}},
                  {offset: 3, size: 1,
                   expr: {op: '-', args: [{op: 'sym', num: 1}, off(4)]}}],
+          asserts: [inRange(0, 2), inRange(1, 4)],
         }],
         symbols: [{expr: off(4)},
                   {expr: off(6)}],
