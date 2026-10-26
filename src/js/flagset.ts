@@ -919,6 +919,22 @@ class Quality extends FlagSection {
   });
 }
 
+class Coop extends FlagSection {
+  readonly prefix = 'C';
+  readonly name = 'Co-op';
+  readonly description = `
+      Experimental two-player co-op.  Only the patch is shared: each player
+      builds from their own ROM, and both must use identical flags and seed
+      for emulator netplay to connect.`;
+
+  static readonly TwoPlayer = Coop.flag('Cp', {
+    name: 'Two-player co-op',
+    text: `Work in progress.  Will let a second player join on controller 2
+           as a second hero.  For now this only reserves memory and has no
+           effect on gameplay.`,
+  });
+}
+
 class DebugMode extends FlagSection {
   // TODO - how to discover FlagSections???
   readonly prefix = 'D';
@@ -1148,6 +1164,9 @@ export class FlagSet {
   }
   neverDie(): boolean {
     return this.check(DebugMode.NeverDie);
+  }
+  coop(): boolean {
+    return this.check(Coop.TwoPlayer);
   }
   noShuffle(): boolean {
     return this.check(DebugMode.NoShuffle);
