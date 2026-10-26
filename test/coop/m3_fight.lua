@@ -89,6 +89,11 @@ local function findEnemy(exclude)
   end
   return nil
 end
+-- Is object e still a live enemy (not dying, $7d, or gone)?
+local function alive(e)
+  local act = e and rd(0x04a0 + e) or 0
+  return act ~= 0 and (act & 0x7f) ~= 0x7d and rd(0x03c0 + e) ~= 0xff
+end
 -- Put object e at player 2's ground position plus (dx, dy).
 local function putNearP2(e, dx, dy)
   local x = rd(P2Ground + 1) * 256 + rd(P2Ground) + dx
@@ -167,7 +172,12 @@ local steps = {
       s.p2hp, s.p1hp = rd(P2HP), SAFE.hp
       wr(P2Invuln, 0)
       log(string.format("  enemy slot %02x action %02x attack %d", s.e, rd(0x04a0 + s.e), rd(0x03e0 + s.e)))
-      atSafePoint = function() putNearP2(s.e, 0, 0) end
+      -- Player 2's last swing from step 4 may still kill this one: then
+      -- take the next enemy.
+      atSafePoint = function()
+        if not alive(s.e) then s.e = findEnemy() or s.e end
+        putNearP2(s.e, 0, 0)
+      end
     end
     if rd(P2HP) < s.p2hp then
       if SAFE.hp ~= s.p1hp then return fail("PlayerHP changed too") end
@@ -180,12 +190,13 @@ local steps = {
   --     never stops for the "poisoned" status message (GameMode $10).
   function()
     if since() == 1 then
-      if not (s.e and rd(0x04a0 + s.e) ~= 0) then s.e = findEnemy() end
+      if not alive(s.e) then s.e = findEnemy() end
       if not s.e then return fail("no enemy left") end
-      wr(0x0420 + s.e, rd(0x0420 + s.e) | 0x80)
       s.status, s.hits, s.lastHP = SAFE.status, 0, rd(P2HP)
       atSafePoint = function()
-        if rd(0x04a0 + s.e) ~= 0 then putNearP2(s.e, 0, 0) end
+        if not alive(s.e) then s.e = findEnemy() or s.e end
+        wr(0x0420 + s.e, rd(0x0420 + s.e) | 0x80)
+        if alive(s.e) then putNearP2(s.e, 0, 0) end
         wr(P2Invuln, 0)
         if rd(P2HP) < 20 then wr(P2HP, 40) end
       end

@@ -196,9 +196,13 @@ export async function shuffle(rom: Uint8Array,
 
   deterministicPreParse(rom.subarray(0x10)); // TODO - trainer...
 
-  // First reencode the seed, mixing in the flags for security.
+  // First reencode the seed, mixing in the flags for security.  Co-op (Cp)
+  // is left out, so a co-op ROM gets exactly the same random choices as the
+  // same flags without Cp, and the two differ only by the co-op code.
   if (typeof seed !== 'number') throw new Error('Bad seed');
-  const newSeed = crc32(seed.toString(16).padStart(8, '0') + String(originalFlags.filterOptional())) >>> 0;
+  const seedFlags = originalFlags.filterOptional();
+  seedFlags.set('Cp', false);
+  const newSeed = crc32(seed.toString(16).padStart(8, '0') + String(seedFlags)) >>> 0;
   const random = new Random(newSeed);
 
   const attemptErrors = [];

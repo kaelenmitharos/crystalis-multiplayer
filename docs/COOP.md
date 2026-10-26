@@ -50,7 +50,7 @@ Any BPS patcher works:
 
 The patched ROM must have this SHA-1:
 
-`006705575d3e417de1c788590a393f0db5e13755`
+`8f28b1c79af121134156fda36f76372cbe5b1aa2`
 
 For netplay, both players need exactly this ROM. You can also check on the
 title screen: it says **RANDOMIZER COOP**, and after pressing Start the
