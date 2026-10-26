@@ -1,2 +1,6 @@
+# Keep LF line endings on every platform.  The assembler fails on CRLF,
+# which Windows checkouts produce when core.autocrlf is true.
+*               text=auto eol=lf
+
 vanilla/*.s     filter=disasm
 src/asm/*.s     filter=disasm

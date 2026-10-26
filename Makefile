@@ -99,7 +99,7 @@ $(DATA_TAR): $(TAR_COPIES)
 	(cd $(DATADIR); COPYFILE_DISABLE=1 tar cv $(^:$(DATADIR)/%=%)) > $@
 
 $(DATA_TBR): $(BROTLI) $(DATA_TAR)
-	$(BROTLI) < $(DATA_TAR) > $@
+	$(BROTLI) $(DATA_TAR) -o $@
 
 $(BUILD_INFO): scripts/build_info.sh
 	$<
