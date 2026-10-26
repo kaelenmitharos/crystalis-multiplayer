@@ -69,7 +69,13 @@ P2Down        = $62c4  ; nonzero: player 2 is down (0 HP, frozen)
 CoopFarTarget = $62c5  ; 2 bytes: bank $0d routine for CoopCall0d
 CoopFarA      = $62c7  ; A in/out for CoopCall0d
 CoopTarget    = $62c8  ; target slot of player 2's collision
-;;; $62c9..$62db spare
+;;; M3b:
+P2HudHP       = $62c9  ; P2HP / P2MaxHP as last drawn in the status bar
+P2HudMax      = $62ca
+P2HudState    = $62cb  ; nonzero: player 2's readout is on screen
+P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
+CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
+;;; $62ce..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -208,6 +214,7 @@ CoopUpdateObjects:
   jsr $cccc ; object loop: every slot's action, including the hero's
   lda P2Active
   ora P2Slot  ; also run once after leaving, to despawn
+  ora P2HudState ; ... and to clear the HP readout
   beq +
    lda #COOP_BANK
    jsr BankSwitch8k_8000
@@ -292,6 +299,60 @@ CoopHpGuard:
   pla        ; X saved by UpdateHPDisplayInternal
   tax
   rts        ; return from UpdateHPDisplayInternal itself
+
+;;; Charge shots (M3b).  The hero's charge shots spawn through
+;;; AdHocSpawnObject, whose AdHocSpawns entries ($bc00, bank $14) give each
+;;; shot a slot range [start, end) that always starts at 4 (up to $08 or
+;;; $0c; Fire 2, Flame and Storm use slot 4 only).  Its one call to
+;;; FindEmptySpawnSlot ($98b9) is redirected here: while player 2 is
+;;; joined, player 1's shots use slots 4..7 and player 2's (spawned while
+;;; their update runs) use 8..$b.  The vanilla collision pass already
+;;; checks all of 4..$b against enemies, so player 2's shots need nothing
+;;; more.
+;;;
+;;; ChargeIndicatorDisplay ($8d59) draws the hero's charge meter (and
+;;; waits for the nametable buffer).  Its call in action $03 is redirected
+;;; to a guard that skips it while player 2's update runs, so player 2 can
+;;; charge without drawing over player 1's meter.
+.pushseg "1a"
+.org $9779 ; in AdHocSpawnObject: was jsr FindEmptySpawnSlot
+  jsr CoopFindSlot
+.org $9ef5 ; in ObjectActionJump_03: was jsr ChargeIndicatorDisplay
+  jsr CoopChargeGuard
+.popseg
+
+.reloc
+CoopChargeGuard:
+  lda CoopP2Running
+  bne +
+  jmp $8d59 ; ChargeIndicatorDisplay
++ rts
+
+.reloc
+CoopFindSlot:
+  cpy #$04           ; only the hero's shots start at slot 4
+  bne @go
+  lda P2Active
+  beq @go
+  lda CoopP2Running
+  bne @p2
+  lda $10            ; player 1: 4..7
+  cmp #$09
+  bcc @go
+  lda #$08
+  sta $10
+  bne @go            ; (always)
+@p2:
+  ldy #$08           ; player 2: the same range moved up by 4, within 8..$b
+  lda $10
+  clc
+  adc #$04
+  cmp #$0d
+  bcc +
+   lda #$0c
++ sta $10
+@go:
+  jmp $98b9 ; FindEmptySpawnSlot
 
 .pushseg "3a" ; COOP_BANK
 
@@ -544,8 +605,127 @@ CoopSwapP2:
 COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
+;;; ----------------------------------------------------------------
+;;; Player 2's HP readout (M3b): "2 Lf HHH/MMM" in the status bar.
+;;;
+;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
+;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
+;;; row $2b40 is Pw, the charge arrows and the ball indicators, then Dl and
+;;; Ex; row $2b60 has the enemy HP readout at $2b62..$2b6a (_ENEMY_HP),
+;;; blanks to $2b75, then Mp.  The enemy name goes on the border row $2b82.
+;;; So player 2's readout uses row 3, $2b6c..$2b74, with the randomizer's
+;;; HUD layout (_UPDATE_HUD; with the vanilla HUD (Vh) it is not shown).
+;;;
+;;; Tiles are staged at $6071..$6079 and queued like UpdateHPDisplayInternal
+;;; does.  In normal play the staging area at $6000 is used by map
+;;; scrolling (from $6000), player 1's bar and the charge meter
+;;; ($6060..$6070), the status numbers (from $607b), map rows ($6080..) and
+;;; the enemy readouts ($60a0, $60b0); $60c0.. is used by Draygon 2.
+;;; Redrawn only when P2HP or P2MaxHP change, plus every 256 frames in
+;;; case a full status bar redraw (menus, map loads) wiped it.
+.ifdef _UPDATE_HUD
+COOP_HUD_BUF = $71         ; staging offset: $6071..$6079
+COOP_HUD_PPU_HI = $2b      ; PPU $2b6c
+COOP_HUD_PPU_LO = $6c
+
+.reloc
+CoopP2Hud:
+  lda P2Active
+  bne @joined
+  lda P2HudState
+  bne +
+  rts                ; not joined and not shown
++ lda #$00
+  sta P2HudState
+  lda #COOP_HUD_BUF
+  jsr $c72b          ; WaitForNametableBufferAvailable
+  lda #$20           ; blank tile
+  ldx #$08
+-  sta $6000+COOP_HUD_BUF,x
+   dex
+  bpl -
+  jmp @stage
+@joined:
+  dec P2HudTimer
+  beq @draw          ; periodic refresh
+  lda P2HudState
+  beq @draw
+  lda P2HP
+  cmp P2HudHP
+  bne @draw
+  lda P2MaxHP
+  cmp P2HudMax
+  bne @draw
+  rts
+@draw:
+  lda #$01
+  sta P2HudState
+  lda P2HP
+  sta P2HudHP
+  lda P2MaxHP
+  sta P2HudMax
+  lda #COOP_HUD_BUF
+  jsr $c72b          ; WaitForNametableBufferAvailable
+  lda #$02           ; "2"
+  sta $6000+COOP_HUD_BUF
+  lda #$80           ; "Lf"
+  sta $6000+COOP_HUD_BUF+1
+  lda P2HP
+  ldx #COOP_HUD_BUF+2
+  jsr @digits
+  lda #$9d           ; "/"
+  sta $6000+COOP_HUD_BUF+5
+  lda P2MaxHP
+  ldx #COOP_HUD_BUF+6
+  jsr @digits
+@stage:
+  jsr $c43e          ; DisableNMI
+  ldx $0b            ; NametableBufferWriteOffset
+  lda #COOP_HUD_PPU_HI
+  sta $6200,x
+  lda #COOP_HUD_PPU_LO
+  sta $6201,x
+  lda #$09
+  sta $6202,x
+  lda #COOP_HUD_BUF
+  sta $6203,x
+  txa
+  clc
+  adc #$04
+  and #$1f
+  sta $0b
+  jmp $c436          ; EnableNMI
+;;; Three decimal digits of A at $6000+X..X+2 (digit tiles are $00..$09).
+@digits:
+  ldy #$00
+-  cmp #100
+   bcc +
+   sbc #100
+   iny
+  bne -
++ pha
+  tya
+  sta $6000,x
+  pla
+  ldy #$00
+-  cmp #10
+   bcc +
+   sbc #10
+   iny
+  bne -
++ pha
+  tya
+  sta $6001,x
+  pla
+  sta $6002,x
+  rts
+.endif ; _UPDATE_HUD
+
 .reloc
 CoopUpdateP2:
+.ifdef _UPDATE_HUD
+  jsr CoopP2Hud
+.endif
   ;; Player 2 left: remove their object.
   lda P2Active
   bne +
@@ -659,8 +839,8 @@ CoopUpdateP2:
   sta CoopSave61fd
   lda P2Held
   and #$7f         ; no A yet.  B held starts the swing (action $03 sets the
-  sta $43          ; sword timer); it can't charge, because the odd
-                   ; GlobalCounter below skips the charge step (M3b)
+  sta $43          ; sword timer; holding it charges, and releasing it
+                   ; fires a charge shot into slots 8..$b (M3b)
   and #$0f
   tay
   lda $fed0,y      ; DirectionsByDpadBits
@@ -670,20 +850,26 @@ CoopUpdateP2:
   sta $4b
   lda #$00
   sta $61fd        ; never consume player 1's trigger-skip latch
-  ;; Make GlobalCounter odd while player 2 runs.  Action $03 calls
-  ;; ChargeIndicatorDisplay when (GlobalCounter & 3) == 0; for player 2
-  ;; that would draw their charge over player 1's meter and wait for the
-  ;; nametable buffer, which cost a whole frame (measured: 32% lag frames
-  ;; in a busy room).  GlobalCounter is only changed by the main loop, so
-  ;; restoring it afterwards is exact.
-  lda $08
-  pha
-  ora #$01
-  sta $08
+  ;; While player 2 runs (CoopP2Running), CoopChargeGuard skips the charge
+  ;; meter, which would draw player 2's charge over player 1's and wait
+  ;; for the nametable buffer (it cost 32% lag frames in M2a), and
+  ;; CoopFindSlot puts player 2's charge shots in slots 8..$b.
+  lda #$01
+  sta CoopP2Running
+  ;; Player 2's status for their update: action $01 picks the slime
+  ;; sprite and speed for curse.
+  lda $0710          ; PlayerStatus
+  ldy P2Status
+  sta P2Status
+  sty $0710
   ;; Run the hero's update as player 2 (fixed bank; maps bank $0d).
   jsr CoopRunP2Actions
-  pla
-  sta $08
+  lda $0710
+  ldy P2Status
+  sta P2Status
+  sty $0710
+  lda #$00
+  sta CoopP2Running
   ;; Swap back.
   jsr CoopSwapP2
   lda CoopSave43
@@ -1137,6 +1323,32 @@ CoopPBOnScreen:
 ;;; Keeps player 2's max HP in step with player 1's, and ticks their
 ;;; invincibility (bit $04 of their copy of $0381, as vanilla does).
 CoopP2Vitals:
+  ;; Poison: 4 HP every 32 frames, as _3ef55 does for player 1.  At 0 HP
+  ;; player 2 goes down.
+  lda P2Down
+  bne @poisonDone
+  lda P2Status
+  and #$0f
+  cmp #$03           ; STATUS_POISON
+  bne @poisonDone
+  lda $08            ; GlobalCounter
+  and #$1f
+  bne @poisonDone
+  lda P2HP
+  sec
+  sbc #$04
+  bcs +
+   lda #$00
++ sta P2HP
+  lda #$36           ; SFX_POISON
+  jsr $c125          ; StartAudioTrack
+  lda P2HP
+  bne @poisonDone
+  lda #$01
+  sta P2Down
+  lda #$00
+  sta P2DownTimer
+@poisonDone:
   lda $03c0          ; PlayerMaxHP
   sta P2MaxHP
   cmp P2HP
@@ -1199,6 +1411,7 @@ CoopReviveP2:
   lda #$00
   sta P2Down
   sta P2DownTimer
+  sta P2Status       ; back on their feet without any status
   lda P2MaxHP
   lsr
   lsr
@@ -1254,13 +1467,15 @@ CoopP2Collisions:
 @exit:
   rts
 @body:
-  ;; Enemies and their shots touching player 2's body, on even frames
+  ;; Enemies and their shots touching player 2's body, every 4th frame
   ;; (the sword below takes the odd ones), so player 2 adds at most one
-  ;; CheckHitbox per frame.  Measured: checking the body every frame took
-  ;; lag frames from 8% to 17% in the busy-room stress test.
+  ;; CheckHitbox per frame.  Contact lasts several frames (even fast shots
+  ;; overlap the hero's hitbox for 4+), so a hit lands at most 3 frames
+  ;; late.  Busy-room stress test (perf.lua): body every frame 17%, even
+  ;; frames 14.5%, every 4th frame 12.3% lag frames.
   lda $08
-  lsr
-  bcs @sword
+  and #$03
+  bne @sword
   lda P2Invuln
   bne @sword
   lda $03a1          ; the hero's collision plane
@@ -1282,15 +1497,17 @@ CoopP2Collisions:
   and #$7f
   cmp #$7b           ; a coin: leave it for player 1
   beq @sword
-  ;; Status projectiles (paralysis, stone, MP drain, curse: $0540 = $ff
-  ;; with a status in $0560) deal no damage in vanilla and only apply a
-  ;; status, which player 2 doesn't have yet (M3b).  The curse path also
-  ;; recomputes player 1's equipment.  So they pass through player 2.
+  ;; Status projectiles ($0540 = $ff with a status in $0560) deal no
+  ;; damage in vanilla, only a status.  Vanilla's handler would show the
+  ;; status message (GameMode $10) and, for curse, recompute player 1's
+  ;; equipment, so player 2's are handled here (M3b).
   lda $0540,y
   cmp #$ff
   bne +
   lda $0560,y
-  bne @sword
+  beq +
+  jsr CoopP2StatusShot
+  jmp @sword
 + jsr CoopP2TakeHit
 @sword:
   ;; Player 2's sword, on odd frames like vanilla's sword entry.
@@ -1320,6 +1537,40 @@ CoopP2Collisions:
 @done:
   rts
 
+;;; A status projectile (CoopTarget, status A in its $0560) hit player 2.
+;;; Mirrors PlayerHit_ApplyProjectileStatus without the status message:
+;;; 1 = paralysis (blocked by the Sacred or Psycho Shield; player 1's
+;;; shield stands in for player 2's), 2 = stone and 3 = MP drain (not
+;;; supported for player 2 yet: they pass through), anything else = curse.
+CoopP2StatusShot:
+  cmp #$01
+  bne @notParalysis
+  lda $0714          ; EquippedShield
+  cmp #$06           ; SHIELD_SACRED
+  beq @remove
+  cmp #$08           ; SHIELD_PSYCHO
+  beq @remove
+  lda P2Status
+  and #$f0
+  ora #$01           ; STATUS_PARALYZED
+  sta P2Status
+  lda #$44           ; SFX_PARALYZED
+  jsr $c125          ; StartAudioTrack
+  jmp @remove
+@notParalysis:
+  cmp #$02           ; stone: changes the global palette, not supported
+  beq @pass
+  cmp #$03           ; MP drain web: not supported
+  beq @pass
+  lda #$04           ; STATUS_CURSED (vanilla stores it outright)
+  sta P2Status
+@remove:
+  ldy CoopTarget
+  lda #$00
+  sta $04a0,y
+@pass:
+  rts
+
 ;;; Targets $0d..$1e, as in CollisionTable.
 CoopSetRange:
   lda #$0c
@@ -1344,6 +1595,27 @@ CoopSwapVitals:
   sty $0710
   rts
 
+;;; Swaps in (or back) the parts of player 2 that CollisionJump_01 uses.
+;;; Traced: besides HP, invincibility and status (CoopSwapVitals) it only
+;;; touches slot 0's $0340/$0360 (knockback) and slot 1's $0341, $0361 and
+;;; $0381 -- except for targets with action $38 or $3c, where
+;;; PlayerHit_ApplyKnockback moves slot 0 with MoveObjectWithSpeedAndDirection,
+;;; so those get the full CoopSwapP2.  About 100 cycles instead of 1000.
+;;; CoopTmp+1 says which (set by CoopP2TakeHit before the first call, as
+;;; the handler may remove the target before the swap back).
+CoopSwapHit:
+  lda CoopTmp+1
+  bne @full
+  COOP_SWAP0 $0340, 5
+  COOP_SWAP0 $0360, 6
+  ldx P2Slot
+  COOP_SWAP1 $0340
+  COOP_SWAP1 $0360
+  COOP_SWAP1 $0380
+  rts
+@full:
+  jmp CoopSwapP2
+
 ;;; Enemy CoopTarget hit player 2: run vanilla's handler as player 2.
 CoopP2TakeHit:
   lda #$01
@@ -1354,23 +1626,40 @@ CoopP2TakeHit:
   pha
   lda $0640
   pha
-  ;; No status effects for player 2 yet (M3b): PlayerHit_ApplyStatus
-  ;; poisons unless EquippedArmor is Battle Armor, and poisoning sets
-  ;; GameMode $10 (status message) for everyone.  Damage uses the defense
-  ;; values ($0400/$0401), not this byte, so it is unaffected.
-  lda $0713          ; EquippedArmor
+  ;; Contact poison (PlayerHit_ApplyStatus) lands in P2Status, swapped in
+  ;; below; player 1's armor counts as player 2's for the Battle Armor
+  ;; check.  It also shows the "poisoned" message by setting GameMode $10
+  ;; and $06c3/$06e3, which would stop the game for both players, so
+  ;; those are put back afterwards.
+  lda $41            ; GameMode
   pha
-  lda #$07           ; ARMOR_BATTLE
-  sta $0713
-  jsr CoopSwapP2
+  lda $06c3
+  pha
+  lda $06e3
+  pha
+  ldy CoopTarget     ; knockback-relay targets need the full swap
+  lda $04a0,y
+  and #$7f
+  ldx #$00
+  cmp #$38
+  beq +
+  cmp #$3c
+  bne ++
++  inx
+++ stx CoopTmp+1
+  jsr CoopSwapHit
   jsr CoopSwapVitals
   ldx #$01
   ldy CoopTarget
   COOP_FAR $9357     ; CollisionJump_01_EnemyHitsPlayer
   jsr CoopSwapVitals
-  jsr CoopSwapP2
+  jsr CoopSwapHit
   pla
-  sta $0713
+  sta $06e3
+  pla
+  sta $06c3
+  pla
+  sta $41
   pla
   sta $0640
   pla
@@ -1443,6 +1732,17 @@ CoopCameraFar:
   ror CoopTmp
   lda CoopTmp
   sta $70
+  ;; Y on the same 240 px screen (the usual case): (y1 + y2) / 2, 9-bit.
+  lda P2Ground+3
+  cmp CoopPA+3
+  bne @yAcross
+  lda P2Ground+2
+  clc
+  adc CoopPA+2
+  ror
+  sta $b0
+  jmp @onScreenX
+@yAcross:
   ;; Y: y1 + (y2 - y1) / 2, in pixels across 240 px screens.
   lda P2Ground+2
   sec
@@ -1523,6 +1823,7 @@ CoopCameraFar:
   lda CoopTmp
   sta $b0
   stx $d0
+@onScreenX:
   ;; On-screen X of the midpoint, and either player's left/right.
   lda $70
   sec
