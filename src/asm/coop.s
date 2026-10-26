@@ -46,7 +46,20 @@ CoopSave61fd  = $628f
 CoopOldXY     = $6290  ; 4 bytes: player 2 ground coords before this frame
 P2Ground      = $6294  ; 17 bytes: player 2's copy of slot 0 (see
                        ; CoopSlot0Fields; first 4 are XLo XHi YLo YHi)
-;;; $62a5..$62bf spare
+CoopP1Old     = $62a5  ; 4 bytes: player 1 ground coords after last update
+CoopP1OldSpr  = $62a9  ; 4 bytes: player 1 sprite (slot 1) coords, ditto
+CoopFlags     = $62ad  ; bit 0: CoopP1Old is valid for the leash
+                       ; bit 1: player 2 is idle and already settled
+COOP_P1OLD_OK = $01
+COOP_P2_SETTLED = $02
+CoopPA        = $62ae  ; 4 bytes: position A for CoopDist (also scratch)
+CoopPB        = $62b2  ; 4 bytes: position B for CoopDist (also scratch)
+CoopDX        = $62b6  ; 2 bytes: |A.x - B.x| from CoopDist
+CoopDY        = $62b8  ; 2 bytes: |A.y - B.y| (screens are 240 px tall)
+CoopDX0       = $62ba  ; 2 bytes: previous distances, for the leash
+CoopDY0       = $62bc
+CoopTmp       = $62be  ; 2 bytes scratch
+;;; ($62bf is the last byte of the block)
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -215,6 +228,38 @@ CoopRunP2Actions:
   jsr $9b45 ; ObjectActionJump_01 (bank $0d)
   rts
 
+;;; Terrain under the point $34..$37, for placing player 2 (M2b).  Called
+;;; from bank $3a.  Runs the hero's own CheckTerrainUnderObject (bank $0d)
+;;; for slot 0, forcing a lookup without touching $0380.  Result in $20:
+;;; 01 pit, 02 impassable on foot, 04 impassable flying, 20 slide,
+;;; 40 slow, 80 pain.
+.reloc
+CoopCheckTerrain:
+  lda #$0d
+  jsr BankSwitch16k
+  ldx #$00
+  lda #$80
+  jsr $9a30 ; CheckTerrainUnderObject (bank $0d)
+  lda #COOP_BANK
+  jmp BankSwitch8k_8000
+
+;;; Midpoint camera (M2b).  _3e90a calls KeepPlayerInCenterOfScreenIfPossible
+;;; ($e9ad), which is the only camera code that reads the hero.  While
+;;; player 2 is on screen, CoopCameraFar (bank $3a) puts the midpoint of the
+;;; two heroes into slot 0 around that call.  FindExit runs after
+;;; _3e90a, so slot 0 is back to player 1 by then.
+.org $e90a
+  jsr CoopCamera
+
+.reloc
+CoopCamera:
+  lda P2Slot
+  beq +
+   lda #COOP_BANK
+   jsr BankSwitch8k_8000 ; _3e90a maps its own bank right after this
+   jmp CoopCameraFar
++ jmp $e9ad ; KeepPlayerInCenterOfScreenIfPossible
+
 .pushseg "3a" ; COOP_BANK
 
 ;;; Slot 0 fields used by actions $03/$01 (address for slot 0).
@@ -246,6 +291,7 @@ CoopDespawnP2:
     sta $04a0,x
 ++ lda #$00
    sta P2Slot
+   sta CoopFlags
 + rts
 
 ;;; Spawns player 2 as a copy of the hero, at the hero's position, in the
@@ -309,6 +355,7 @@ CoopSpawnP2:
   bpl -
   lda $6c ; CurrentLocation
   sta P2Loc
+  jsr CoopPlaceP2  ; one tile beside player 1, on walkable ground
   sec
   rts
 
@@ -364,6 +411,13 @@ CoopSwapP2:
   COOP_SWAP1 $06c0
   rts
 
+;;; Leash (M2b): the heroes may not get further apart than this, so the
+;;; midpoint camera can keep both 16 px inside the screen.  The camera
+;;; only scrolls once the midpoint leaves X $68..$a0 / Y $68..$78 of the
+;;; screen, and the hero's invisible wall is X $0a..$fc / Y $18..$d0.
+COOP_LEASH_X = 176
+COOP_LEASH_Y = 128
+
 .reloc
 CoopUpdateP2:
   ;; Player 2 left: remove their object.
@@ -371,13 +425,25 @@ CoopUpdateP2:
   bne +
    jmp CoopDespawnP2
 +
-  ;; Only while the hero is in its normal state (actions $03 and $01).
+  ;; Hide player 2 during set pieces: player 1 changed (Change), riding
+  ;; the dolphin, flying (terrain susceptibility $34), or in any hero
+  ;; action other than the normal $03/$01 (cutscenes, warps, deaths...).
+  ;; They reappear beside player 1 when it ends.
   lda $04a0
   cmp #$03
-  bne @done
+  bne @hide
   lda $04a1
   cmp #$01
-  bne @done
+  bne @hide
+  lda $0710        ; PlayerStatus: $80 changed, $40 dolphin
+  and #$c0
+  bne @hide
+  lda $0460
+  cmp #$34         ; flying
+  bne @normal
+@hide:
+  jmp CoopDespawnP2
+@normal:
   ;; (Re)spawn after joining, after a map load, or if the slot was taken.
   ldx P2Slot
   beq @spawn
@@ -390,15 +456,46 @@ CoopUpdateP2:
 @spawn:
   jsr CoopSpawnP2
   bcs @spawned
-@done:
-  rts             ; not normal play, or no free slot this frame
+  rts             ; no free slot this frame
 @spawned:
-  ;; Remember where player 2 stood, for the screen clamp.
+  ;; Select on pad 2: back next to player 1.
+  lda P2Pressed
+  and #$20
+  beq +
+   jsr CoopPlaceP2
++
+  ;; Remember where player 2 stood, for the leash and the screen clamp.
   ldx #$03
 -  lda P2Ground,x
    sta CoopOldXY,x
    dex
   bpl -
+  ;; Idle skip: with no direction held and nothing moving them (jump,
+  ;; knockback, slide), the hero update changes nothing for player 2
+  ;; after one settling frame, so skip the swap and both actions (about
+  ;; 3500 cycles).
+  lda P2Held
+  and #$0f
+  bne @active
+  lda P2Ground+11      ; $0620 jump height
+  bne @active
+  lda P2Ground+5       ; $0340 knockback (upper nibble)
+  and #$f0
+  bne @active
+  lda P2Ground+14      ; $06a0 slide counter
+  bne @active
+  lda CoopFlags
+  and #COOP_P2_SETTLED
+  bne @after
+  lda CoopFlags
+  ora #COOP_P2_SETTLED
+  sta CoopFlags
+  bne @run             ; (always) one idle frame to settle the pose
+@active:
+  lda CoopFlags
+  and #$ff-COOP_P2_SETTLED
+  sta CoopFlags
+@run:
   ;; Swap in player 2: objects, then pad bytes.
   jsr CoopSwapP2
   lda $43
@@ -445,32 +542,337 @@ CoopUpdateP2:
   sta $4b
   lda CoopSave61fd
   sta $61fd
-  ;; Fall through to the screen clamp.
+@after:
+  ;; Leash (undo whichever move stretched it), then keep player 2 on
+  ;; screen.  Usually one distance check: the detailed checks only run
+  ;; when the heroes are past the leash.
+  jsr CoopSetPAToP1
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  jsr CoopOverLeash
+  bcc +
+   jsr CoopLeashP2
+   jsr CoopLeashP1
++ jsr CoopClampP2
+  ;; Remember player 1's position for next frame's leash check.
+  lda $70
+  sta CoopP1Old
+  lda $90
+  sta CoopP1Old+1
+  lda $b0
+  sta CoopP1Old+2
+  lda $d0
+  sta CoopP1Old+3
+  lda $71
+  sta CoopP1OldSpr
+  lda $91
+  sta CoopP1OldSpr+1
+  lda $b1
+  sta CoopP1OldSpr+2
+  lda $d1
+  sta CoopP1OldSpr+3
+  lda CoopFlags
+  ora #COOP_P1OLD_OK
+  sta CoopFlags
+  rts
 
-;;; Keeps player 2 on screen.  If this frame's move took them off screen,
-;;; undo it; if they are still off screen (the camera followed player 1
-;;; away), put them on player 1.
-CoopClampP2:
-  jsr CoopP2OnScreen
-  bcs +++
+;;; Sets carry if CoopDX/DY are past the leash on either axis.
+CoopOverLeash:
+  lda CoopDX+1
+  bne @yes
+  lda #COOP_LEASH_X
+  cmp CoopDX
+  bcc @yes
+  lda CoopDY+1
+  bne @yes
+  lda #COOP_LEASH_Y
+  cmp CoopDY
+  bcc @yes
+  clc
+  rts
+@yes:
+  sec
+  rts
+
+;;; Undo player 2's move if it stretched the leash.
+CoopLeashP2:
+  jsr CoopSetPAToP1
+  ldx #$03
+-  lda CoopOldXY,x
+   sta CoopPB,x
+   dex
+  bpl -
+  jsr CoopDist
+  jsr CoopSaveDist
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  jsr CoopLeashViolated
+  bcc +
+  jmp CoopRevertP2
++ rts
+
+;;; Undo player 1's move (since our last update) if it stretched the leash.
+CoopLeashP1:
+  lda CoopFlags
+  and #COOP_P1OLD_OK
+  beq +
+  ldx #$03
+-  lda CoopP1Old,x
+   sta CoopPA,x
+   dex
+  bpl -
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  jsr CoopSaveDist
+  jsr CoopSetPAToP1
+  jsr CoopDist
+  jsr CoopLeashViolated
+  bcc +
+   lda CoopP1Old
+   sta $70
+   lda CoopP1Old+1
+   sta $90
+   lda CoopP1Old+2
+   sta $b0
+   lda CoopP1Old+3
+   sta $d0
+   lda CoopP1OldSpr
+   sta $71
+   lda CoopP1OldSpr+1
+   sta $91
+   lda CoopP1OldSpr+2
+   sta $b1
+   lda CoopP1OldSpr+3
+   sta $d1
++ rts
+
+CoopSetPAToP1:
+  lda $70
+  sta CoopPA
+  lda $90
+  sta CoopPA+1
+  lda $b0
+  sta CoopPA+2
+  lda $d0
+  sta CoopPA+3
+  rts
+
+CoopSetPBToP2:
+  ldx #$03
+-  lda P2Ground,x
+   sta CoopPB,x
+   dex
+  bpl -
+  rts
+
+CoopSaveDist:
+  lda CoopDX
+  sta CoopDX0
+  lda CoopDX+1
+  sta CoopDX0+1
+  lda CoopDY
+  sta CoopDY0
+  lda CoopDY+1
+  sta CoopDY0+1
+  rts
+
+;;; CoopDX/CoopDY <- |A - B| per axis (16 bits).  Y is in pixels across
+;;; 240 px screens: y = hi * 240 + lo.
+CoopDist:
+  lda CoopPA
+  sec
+  sbc CoopPB
+  sta CoopDX
+  lda CoopPA+1
+  sbc CoopPB+1
+  sta CoopDX+1
+  bpl +
+   lda #$00
+   sec
+   sbc CoopDX
+   sta CoopDX
+   lda #$00
+   sbc CoopDX+1
+   sta CoopDX+1
++ lda CoopPA+2
+  sec
+  sbc CoopPB+2
+  sta CoopDY
+  lda #$00
+  sbc #$00          ; sign-extend the borrow
+  sta CoopDY+1
+  lda CoopPA+3
+  sec
+  sbc CoopPB+3
+  tax               ; signed difference in screens
+  beq @abs
+  bmi @neg
+@pos:
+   lda CoopDY
+   clc
+   adc #240
+   sta CoopDY
+   lda CoopDY+1
+   adc #$00
+   sta CoopDY+1
+   dex
+  bne @pos
+  beq @abs
+@neg:
+   lda CoopDY
+   sec
+   sbc #240
+   sta CoopDY
+   lda CoopDY+1
+   sbc #$00
+   sta CoopDY+1
+   inx
+  bne @neg
+@abs:
+  lda CoopDY+1
+  bpl +
+   lda #$00
+   sec
+   sbc CoopDY
+   sta CoopDY
+   lda #$00
+   sbc CoopDY+1
+   sta CoopDY+1
++ rts
+
+;;; Sets carry if CoopDX/DY break the leash on an axis where the distance
+;;; also grew compared with CoopDX0/DY0 (so a move that shortens the
+;;; distance is always allowed).
+CoopLeashViolated:
+  lda CoopDX+1
+  bne @xFar
+  lda #COOP_LEASH_X
+  cmp CoopDX
+  bcs @checkY
+@xFar:
+  lda CoopDX0
+  cmp CoopDX
+  lda CoopDX0+1
+  sbc CoopDX+1
+  bcc @yes          ; DX0 < DX: grew
+@checkY:
+  lda CoopDY+1
+  bne @yFar
+  lda #COOP_LEASH_Y
+  cmp CoopDY
+  bcs @no
+@yFar:
+  lda CoopDY0
+  cmp CoopDY
+  lda CoopDY0+1
+  sbc CoopDY+1
+  bcc @yes
+@no:
+  clc
+  rts
+@yes:
+  sec
+  rts
+
+;;; Puts player 2 back where they stood before this frame's move.
+CoopRevertP2:
   ldx #$03
 -  lda CoopOldXY,x
    sta P2Ground,x
    dex
   bpl -
-  jsr CoopSyncP2Sprite
-  jsr CoopP2OnScreen
-  bcs +++
+  jmp CoopSyncP2Sprite
+
+;;; Keeps player 2 on screen.  If this frame's move took them off screen,
+;;; undo it; if they are still off screen (the camera moved away), place
+;;; them beside player 1.
+CoopClampP2:
+  jsr CoopSetPBToP2
+  jsr CoopPBOnScreen
+  bcs +
+  jsr CoopRevertP2
+  jsr CoopSetPBToP2
+  jsr CoopPBOnScreen
+  bcs +
+  jmp CoopPlaceP2
++ rts
+
+;;; Places player 2 one tile beside player 1 on walkable ground: left,
+;;; right, below, above, else on top of player 1.
+CoopPlaceOffX:
+  .byte $f0,$10,$00,$00   ; -16, +16, 0, 0
+CoopPlaceOffXHi:
+  .byte $ff,$00,$00,$00
+CoopPlaceOffY:
+  .byte $00,$00,$10,$f0   ; 0, 0, +16, -16
+CoopPlaceP2:
+  lda #$00
+  sta CoopTmp           ; candidate index
+@next:
+  ldy CoopTmp
   lda $70
-  sta P2Ground
+  clc
+  adc CoopPlaceOffX,y
+  sta CoopPB
   lda $90
-  sta P2Ground+1
-  lda $b0
-  sta P2Ground+2
+  adc CoopPlaceOffXHi,y
+  sta CoopPB+1
   lda $d0
-  sta P2Ground+3
-  jsr CoopSyncP2Sprite
-+++ rts
+  sta CoopPB+3
+  lda CoopPlaceOffY,y
+  beq @y0
+  bmi @yUp
+   lda $b0
+   clc
+   adc #$10
+   cmp #240
+   bcc @yStore
+   sbc #240             ; carry is set here
+   inc CoopPB+3
+   bcs @yStore          ; (always)
+@yUp:
+   lda $b0
+   sec
+   sbc #$10
+   bcs @yStore
+   adc #240             ; carry is clear here
+   dec CoopPB+3
+   jmp @yStore
+@y0:
+  lda $b0
+@yStore:
+  sta CoopPB+2
+  jsr CoopPBOnScreen
+  bcc @reject
+  ;; Terrain at the candidate, via the hero's own check.
+  ldx #$03
+-  lda CoopPB,x
+   sta $34,x
+   dex
+  bpl -
+  jsr CoopCheckTerrain
+  lda $20
+  and #$a3              ; pit, impassable on foot, slide, pain
+  bne @reject
+  ldx #$03
+-  lda CoopPB,x
+   sta P2Ground,x
+   dex
+  bpl -
+  jmp CoopSyncP2Sprite
+@reject:
+  inc CoopTmp
+  lda CoopTmp
+  cmp #$04
+  bne @next
+  ;; Nowhere free: on top of player 1.
+  jsr CoopSetPAToP1
+  ldx #$03
+-  lda CoopPA,x
+   sta P2Ground,x
+   dex
+  bpl -
+  jmp CoopSyncP2Sprite
 
 ;;; Copies player 2's ground position to their sprite slot.
 CoopSyncP2Sprite:
@@ -485,38 +887,192 @@ CoopSyncP2Sprite:
   sta $d0,x
   rts
 
-;;; Sets carry if player 2's ground position is inside the play area.
+;;; Sets carry if the position in CoopPB is inside the play area: 16 px
+;;; inside the hero's invisible wall (X $0a..$fc, Y $18..$d0 on screen).
 ;;; Same screen maths as DrawAllObjectSprites (screens are 240 px tall).
-CoopP2OnScreen:
-  lda P2Ground       ; X lo
+CoopPBOnScreen:
+  lda CoopPB         ; X lo
   sec
   sbc $02            ; ScreenXLo
   tay
-  lda P2Ground+1     ; X hi
+  lda CoopPB+1       ; X hi
   sbc $03            ; ScreenXHi
   bne @off
   cpy #$10
   bcc @off
   cpy #$f0
   bcs @off
-  lda P2Ground+2     ; Y lo
+  lda CoopPB+2       ; Y lo
   cmp $04            ; ScreenYLo
-  lda P2Ground+3     ; Y hi
+  lda CoopPB+3       ; Y hi
   sbc $05            ; ScreenYHi
   bne @off
-  lda P2Ground+2
+  lda CoopPB+2
   sec
   sbc $04
   bcs +
    sbc #$0f
 + cmp #$20
   bcc @off
-  cmp #$b8           ; stay above the status bar
+  cmp #$c8
   bcs @off
   sec
   rts
 @off:
   clc
+  rts
+
+;;; Midpoint camera, entered from CoopCamera (fixed bank) in place of
+;;; KeepPlayerInCenterOfScreenIfPossible.  That routine reads slot 0's
+;;; position ($70/$b0), slot 0's on-screen X ($05c0, used to settle the
+;;; camera when no left/right is held), the knockback sign ($0340) and
+;;; left/right held ($43 & 3).  We give it the midpoint and either pad's
+;;; left/right, then restore.  Only in normal play on player 2's map.
+.reloc
+CoopCameraFar:
+  lda $41           ; GameMode: 8 normal, 7 trigger tile
+  cmp #$08
+  beq +
+  cmp #$07
+  bne @plain
++ lda $6c
+  cmp P2Loc
+  bne @plain
+  ldx P2Slot
+  lda $04a0,x
+  cmp #COOP_P2_ACTION
+  beq @midpoint
+@plain:
+  jmp $e9ad ; KeepPlayerInCenterOfScreenIfPossible
+@midpoint:
+  ;; Save what we overwrite.
+  lda $70
+  sta CoopPA
+  lda $90
+  sta CoopPA+1
+  lda $b0
+  sta CoopPA+2
+  lda $d0
+  sta CoopPA+3
+  lda $05c0
+  sta CoopPB
+  lda $43
+  sta CoopPB+1
+  ;; X: (x1 + x2) / 2, 17-bit sum.
+  lda $70
+  clc
+  adc P2Ground
+  sta CoopTmp
+  lda $90
+  adc P2Ground+1
+  ror
+  sta $90
+  ror CoopTmp
+  lda CoopTmp
+  sta $70
+  ;; Y: y1 + (y2 - y1) / 2, in pixels across 240 px screens.
+  lda P2Ground+2
+  sec
+  sbc CoopPA+2
+  sta CoopTmp
+  lda #$00
+  sbc #$00
+  sta CoopTmp+1
+  lda P2Ground+3
+  sec
+  sbc CoopPA+3
+  tax
+  beq @half
+  bmi @neg
+@pos:
+   lda CoopTmp
+   clc
+   adc #240
+   sta CoopTmp
+   lda CoopTmp+1
+   adc #$00
+   sta CoopTmp+1
+   dex
+  bne @pos
+  beq @half
+@neg:
+   lda CoopTmp
+   sec
+   sbc #240
+   sta CoopTmp
+   lda CoopTmp+1
+   sbc #$00
+   sta CoopTmp+1
+   inx
+  bne @neg
+@half:
+  lda CoopTmp+1     ; arithmetic shift right
+  cmp #$80
+  ror CoopTmp+1
+  ror CoopTmp
+  ;; y1lo + half, then bring back into 0..239 adjusting the screen.
+  lda CoopPA+2
+  clc
+  adc CoopTmp
+  sta CoopTmp
+  lda CoopTmp+1
+  adc #$00
+  sta CoopTmp+1
+  ldx CoopPA+3
+@norm:
+  lda CoopTmp+1
+  bmi @up
+  bne @down
+  lda CoopTmp
+  cmp #240
+  bcc @yDone
+@down:
+   lda CoopTmp
+   sec
+   sbc #240
+   sta CoopTmp
+   lda CoopTmp+1
+   sbc #$00
+   sta CoopTmp+1
+   inx
+  jmp @norm
+@up:
+   lda CoopTmp
+   clc
+   adc #240
+   sta CoopTmp
+   lda CoopTmp+1
+   adc #$00
+   sta CoopTmp+1
+   dex
+  jmp @norm
+@yDone:
+  lda CoopTmp
+  sta $b0
+  stx $d0
+  ;; On-screen X of the midpoint, and either player's left/right.
+  lda $70
+  sec
+  sbc $02
+  sta $05c0
+  lda P2Held
+  and #$03
+  ora $43
+  sta $43
+  jsr $e9ad ; KeepPlayerInCenterOfScreenIfPossible
+  ;; Restore player 1.
+  lda CoopPA
+  sta $70
+  lda CoopPA+1
+  sta $90
+  lda CoopPA+2
+  sta $b0
+  lda CoopPA+3
+  sta $d0
+  lda CoopPB
+  sta $05c0
+  lda CoopPB+1
+  sta $43
   rts
 
 .popseg ; "3a"

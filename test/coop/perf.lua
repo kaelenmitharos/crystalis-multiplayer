@@ -1,8 +1,10 @@
 -- CPU headroom check for co-op (MesenCE only; uses its setInput and
 -- callbackType API).  Build with --flags="Dn Vmsw Cp"; run like m1_input.lua.
--- Wild warps 4 times (to location $14), then measures 600 frames with only
--- player 1 and 600 frames with player 2 walking around.  Results go to
--- perf.log next to this script.
+-- Wild warps 4 times (to location $14), then measures 600 frames each:
+-- player 1 standing alone, player 1 walking a square alone (the camera
+-- scrolls, which costs CPU in vanilla too), and player 2 walking the same
+-- square while player 1 stands (with the midpoint camera, that scrolls by
+-- about half as much).  Results go to perf.log next to this script.
 local DIR = debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])") or ""
 local L = io.open(DIR .. "perf.log", "w")
 local function log(s) L:write(s .. "\n"); L:flush() end
@@ -32,12 +34,19 @@ local function busy() local n = 0; for s = 0x0d, 0x1e do if rd(0x04a0 + s) ~= 0 
 local frame, phase, pf0, warps = 0, "boot", 0, 0
 local in1, in2 = {}, {}
 local m = {}
-local function startMeasure(name) m = {name = name, frames = 0, lag = 0, busy = 0}; costs = {} end
+local function startMeasure(name) m = {name = name, frames = 0, lag = 0, other = 0, busy = 0}; costs = {} end
+-- A lag frame is one in normal play (GameMode 8, or 7 on a trigger tile)
+-- where the game mode 8 handler did not run.  Frames in other modes
+-- (dialogs, menus, map changes) are counted separately.
+local function tally(ran)
+  local gm = rd(0x41)
+  if gm == 8 or gm == 7 then m.lag = m.lag + (1 - ran) else m.other = m.other + 1 end
+end
 local function report()
   table.sort(costs)
   local sum = 0; for _, c in ipairs(costs) do sum = sum + c end
-  log(string.format("%-12s frames=%d lag=%d (%.1f%%) objects avg=%.1f  step cycles: mean=%d median=%d p95=%d max=%d (n=%d)",
-    m.name, m.frames, m.lag, 100 * m.lag / m.frames, m.busy / m.frames,
+  log(string.format("%-12s frames=%d other-mode=%d lag=%d (%.1f%%) objects avg=%.1f  step cycles: mean=%d median=%d p95=%d max=%d (n=%d)",
+    m.name, m.frames, m.other, m.lag, 100 * m.lag / math.max(1, m.frames - m.other), m.busy / m.frames,
     #costs > 0 and math.floor(sum / #costs) or 0, costs[math.floor(#costs / 2) + 1] or 0,
     costs[math.floor(#costs * 0.95)] or 0, costs[#costs] or 0, #costs))
 end
@@ -65,16 +74,25 @@ emu.addEventCallback(function()
     elseif phase == "settle" then
       if pf == 60 then phase, pf0 = "solo", frame; startMeasure("P1 only") end
     elseif phase == "solo" then
-      m.frames = m.frames + 1; m.lag = m.lag + (1 - ran); m.busy = m.busy + busy()
+      m.frames = m.frames + 1; tally(ran); m.busy = m.busy + busy()
       if pf == 600 then report(); phase, pf0 = "join", frame end
+    elseif phase == "solowalk" then
+      -- Same pattern as player 2 below, so the camera scrolls about as much.
+      local dirs = {{left=true},{down=true},{right=true},{up=true}}
+      in1 = dirs[(math.floor(pf / 25) % 4) + 1]
+      m.frames = m.frames + 1; tally(ran); m.busy = m.busy + busy()
+      if pf == 600 then report(); L:close(); emu.stop(0) end
     elseif phase == "join" then
       if pf < 3 then in2 = {start = true} end
       if pf == 30 then phase, pf0 = "duo", frame; startMeasure("P1 + P2") end
     elseif phase == "duo" then
       local dirs = {{left=true},{down=true},{right=true},{up=true}}
       in2 = dirs[(math.floor(pf / 25) % 4) + 1]
-      m.frames = m.frames + 1; m.lag = m.lag + (1 - ran); m.busy = m.busy + busy()
-      if pf == 600 then report(); L:close(); emu.stop(0) end
+      m.frames = m.frames + 1; tally(ran); m.busy = m.busy + busy()
+      if pf == 600 then report(); phase, pf0 = "leave", frame end
+    elseif phase == "leave" then
+      if pf < 3 then in2 = {start = true} end
+      if pf == 30 then phase, pf0 = "solowalk", frame; startMeasure("P1 walking") end
     end
     if frame > 20000 then log("frame limit in " .. phase); L:close(); emu.stop(98) end
   end)
