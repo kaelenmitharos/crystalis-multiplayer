@@ -83,8 +83,87 @@ Player 1 plays as in the original. Player 2, on controller 2:
 
 ## Playing online (netplay)
 
-<!-- Filled in from the M4 RetroArch tests. -->
-See the RetroArch section below.
+Co-op works over RetroArch netplay. The host is player 1 (controller 1)
+and the friend who connects is player 2 (controller 2). Tested with
+RetroArch 1.22.2 on Windows, with the Mesen core and with the FCEUmm core.
+
+### Both players
+
+1. Install RetroArch (<https://www.retroarch.com>, 1.22 or newer). In
+   **Main Menu → Online Updater → Core Downloader**, get
+   **Nintendo - NES / Famicom (Mesen)**. Both players must use the same core
+   (and ideally the same RetroArch version). FCEUmm also works, but both
+   must pick the same one.
+2. Patch your ROM (above) and check the SHA-1. Both players need the exact
+   same patched ROM: RetroArch refuses to connect if the content differs.
+   Use the patched `.nes` file rather than soft-patching, so there is
+   nothing to get out of step.
+3. Load the patched ROM once (**Load Core**, then **Load Content**). In the
+   **Quick Menu → Core Options**, set:
+   - **Remove Sprite Limit** (Mesen; FCEUmm calls it "No Sprite Limit"):
+     **enabled**. Two heroes plus enemies on one line flicker less. It only
+     changes what is drawn, so it can't cause a desync, but both players
+     should still set it the same way.
+   - **Overclock**: leave it at **None** / **disabled** (the default).
+     Overclocking would reduce slowdown in busy rooms, but has not been
+     tested for co-op.
+   Leave everything else at its default.
+4. Map your controller as **Port 1** in **Settings → Input → Port 1
+   Controls**. Each player plays on *their own* port 1: netplay gives the
+   host's controller to the game's controller 1 and the friend's to
+   controller 2.
+
+### The host (player 1)
+
+1. Start the game: **Load Core** (Mesen) and **Load Content** (the patched
+   ROM).
+2. **Main Menu → Netplay → Host → Start Netplay Host**.
+3. Tell your friend your IP address and port (55435 by default). Over the
+   internet the port has to be reachable: either forward TCP 55435 on your
+   router (or turn on NAT traversal / UPnP in RetroArch's network
+   settings, if your router allows it), or turn on **Use Relay Server** in
+   RetroArch's network settings before hosting, and let your friend pick
+   you from the host list instead of typing an IP.
+
+### The friend (player 2)
+
+1. Load the same core and the same patched ROM.
+2. **Main Menu → Netplay → Connect to Netplay Host**, enter the host's
+   address and port (or pick the host from **Refresh Netplay Host List**).
+   RetroArch shows "You have joined as player 2".
+3. Once the host is playing (out of the title screen), press **Start** on
+   your controller to join. Start again leaves.
+
+For breaks, use the game's own Start menu: RetroArch's pause is turned off
+in netplay by default. Save in the game as usual; the host's save file is
+the real one (the friend's copy goes to a separate `.netplay` save
+folder).
+
+### Settings checklist
+
+| Setting | Value |
+| --- | --- |
+| RetroArch | 1.22.2 (same version on both sides is safest) |
+| Core | Mesen (0.9.9) or FCEUmm, the same on both sides |
+| ROM | the patched ROM, SHA-1 above, the same on both sides |
+| Remove Sprite Limit | enabled (both) |
+| Overclock | off (both) |
+| Netplay port | 55435 (TCP), or the relay server |
+| Netplay input latency, check frames | defaults |
+
+### If something goes wrong
+
+- *"Content not loaded" or the connection is refused*: the two ROMs or
+  cores differ. Check the patched ROM's SHA-1 on both sides and that both
+  picked the same core.
+- *Player 2's controller does nothing*: the friend's controller must be
+  mapped to their Port 1. Player 2 also has to press Start to join; they
+  can't join on the title screen.
+- *The game goes out of step (the two screens show different things)*:
+  this hasn't happened in testing. RetroArch checks every 600 frames (10
+  seconds) by default and repairs it by sending the host's game state
+  (the "Netplay Check Frames" setting; leave it at the default). If it
+  keeps happening, both should restart RetroArch and reconnect.
 
 ## Known limitations (v0.1)
 
