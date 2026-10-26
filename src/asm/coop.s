@@ -1467,13 +1467,15 @@ CoopP2Collisions:
 @exit:
   rts
 @body:
-  ;; Enemies and their shots touching player 2's body, on even frames
+  ;; Enemies and their shots touching player 2's body, every 4th frame
   ;; (the sword below takes the odd ones), so player 2 adds at most one
-  ;; CheckHitbox per frame.  Measured: checking the body every frame took
-  ;; lag frames from 8% to 17% in the busy-room stress test.
+  ;; CheckHitbox per frame.  Contact lasts several frames (even fast shots
+  ;; overlap the hero's hitbox for 4+), so a hit lands at most 3 frames
+  ;; late.  Busy-room stress test (perf.lua): body every frame 17%, even
+  ;; frames 14.5%, every 4th frame 12.3% lag frames.
   lda $08
-  lsr
-  bcs @sword
+  and #$03
+  bne @sword
   lda P2Invuln
   bne @sword
   lda $03a1          ; the hero's collision plane
@@ -1593,6 +1595,27 @@ CoopSwapVitals:
   sty $0710
   rts
 
+;;; Swaps in (or back) the parts of player 2 that CollisionJump_01 uses.
+;;; Traced: besides HP, invincibility and status (CoopSwapVitals) it only
+;;; touches slot 0's $0340/$0360 (knockback) and slot 1's $0341, $0361 and
+;;; $0381 -- except for targets with action $38 or $3c, where
+;;; PlayerHit_ApplyKnockback moves slot 0 with MoveObjectWithSpeedAndDirection,
+;;; so those get the full CoopSwapP2.  About 100 cycles instead of 1000.
+;;; CoopTmp+1 says which (set by CoopP2TakeHit before the first call, as
+;;; the handler may remove the target before the swap back).
+CoopSwapHit:
+  lda CoopTmp+1
+  bne @full
+  COOP_SWAP0 $0340, 5
+  COOP_SWAP0 $0360, 6
+  ldx P2Slot
+  COOP_SWAP1 $0340
+  COOP_SWAP1 $0360
+  COOP_SWAP1 $0380
+  rts
+@full:
+  jmp CoopSwapP2
+
 ;;; Enemy CoopTarget hit player 2: run vanilla's handler as player 2.
 CoopP2TakeHit:
   lda #$01
@@ -1614,13 +1637,23 @@ CoopP2TakeHit:
   pha
   lda $06e3
   pha
-  jsr CoopSwapP2
+  ldy CoopTarget     ; knockback-relay targets need the full swap
+  lda $04a0,y
+  and #$7f
+  ldx #$00
+  cmp #$38
+  beq +
+  cmp #$3c
+  bne ++
++  inx
+++ stx CoopTmp+1
+  jsr CoopSwapHit
   jsr CoopSwapVitals
   ldx #$01
   ldy CoopTarget
   COOP_FAR $9357     ; CollisionJump_01_EnemyHitsPlayer
   jsr CoopSwapVitals
-  jsr CoopSwapP2
+  jsr CoopSwapHit
   pla
   sta $06e3
   pla
@@ -1699,6 +1732,17 @@ CoopCameraFar:
   ror CoopTmp
   lda CoopTmp
   sta $70
+  ;; Y on the same 240 px screen (the usual case): (y1 + y2) / 2, 9-bit.
+  lda P2Ground+3
+  cmp CoopPA+3
+  bne @yAcross
+  lda P2Ground+2
+  clc
+  adc CoopPA+2
+  ror
+  sta $b0
+  jmp @onScreenX
+@yAcross:
   ;; Y: y1 + (y2 - y1) / 2, in pixels across 240 px screens.
   lda P2Ground+2
   sec
@@ -1779,6 +1823,7 @@ CoopCameraFar:
   lda CoopTmp
   sta $b0
   stx $d0
+@onScreenX:
   ;; On-screen X of the midpoint, and either player's left/right.
   lda $70
   sec
