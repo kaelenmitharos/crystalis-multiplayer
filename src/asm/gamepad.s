@@ -17,7 +17,11 @@
 
 .ifndef _CHECK_FLAG0
 .org $cb62 ; game mode 8
+.ifdef _COOP
+  jsr CoopReadControllers     ; also reads pad 2 (coop.s)
+.else
   jsr ReadControllersWithButtonUp
+.endif
 .endif
 .endif ; _CTRL1_SHORTCUTS
 

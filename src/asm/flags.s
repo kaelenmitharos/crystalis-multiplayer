@@ -33,11 +33,15 @@ CheckFlag0:
      bpl -
      jsr LoadAndShowDialog
 
+.ifdef _COOP
++  jmp CoopReadControllers     ; also reads pad 2 (coop.s)
+.else
 .ifdef _CTRL1_SHORTCUTS
 +  jmp ReadControllersWithButtonUp
 .else
 +  jmp ReadControllersWithDirections
 .endif
+.endif ; _COOP
 .endif ; _CHECK_FLAG0
 
 
