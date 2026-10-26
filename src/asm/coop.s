@@ -805,8 +805,18 @@ CoopUpdateP2:
   pha
   ora #$01
   sta $08
+  ;; Player 2's status for their update: action $01 picks the speed from
+  ;; it (paralysis is slow) and the slime sprite for curse.
+  lda $0710          ; PlayerStatus
+  ldy P2Status
+  sta P2Status
+  sty $0710
   ;; Run the hero's update as player 2 (fixed bank; maps bank $0d).
   jsr CoopRunP2Actions
+  lda $0710
+  ldy P2Status
+  sta P2Status
+  sty $0710
   pla
   sta $08
   ;; Swap back.
@@ -1262,6 +1272,32 @@ CoopPBOnScreen:
 ;;; Keeps player 2's max HP in step with player 1's, and ticks their
 ;;; invincibility (bit $04 of their copy of $0381, as vanilla does).
 CoopP2Vitals:
+  ;; Poison: 4 HP every 32 frames, as _3ef55 does for player 1.  At 0 HP
+  ;; player 2 goes down.
+  lda P2Down
+  bne @poisonDone
+  lda P2Status
+  and #$0f
+  cmp #$03           ; STATUS_POISON
+  bne @poisonDone
+  lda $08            ; GlobalCounter
+  and #$1f
+  bne @poisonDone
+  lda P2HP
+  sec
+  sbc #$04
+  bcs +
+   lda #$00
++ sta P2HP
+  lda #$36           ; SFX_POISON
+  jsr $c125          ; StartAudioTrack
+  lda P2HP
+  bne @poisonDone
+  lda #$01
+  sta P2Down
+  lda #$00
+  sta P2DownTimer
+@poisonDone:
   lda $03c0          ; PlayerMaxHP
   sta P2MaxHP
   cmp P2HP
@@ -1324,6 +1360,7 @@ CoopReviveP2:
   lda #$00
   sta P2Down
   sta P2DownTimer
+  sta P2Status       ; back on their feet without any status
   lda P2MaxHP
   lsr
   lsr
@@ -1407,15 +1444,17 @@ CoopP2Collisions:
   and #$7f
   cmp #$7b           ; a coin: leave it for player 1
   beq @sword
-  ;; Status projectiles (paralysis, stone, MP drain, curse: $0540 = $ff
-  ;; with a status in $0560) deal no damage in vanilla and only apply a
-  ;; status, which player 2 doesn't have yet (M3b).  The curse path also
-  ;; recomputes player 1's equipment.  So they pass through player 2.
+  ;; Status projectiles ($0540 = $ff with a status in $0560) deal no
+  ;; damage in vanilla, only a status.  Vanilla's handler would show the
+  ;; status message (GameMode $10) and, for curse, recompute player 1's
+  ;; equipment, so player 2's are handled here (M3b).
   lda $0540,y
   cmp #$ff
   bne +
   lda $0560,y
-  bne @sword
+  beq +
+  jsr CoopP2StatusShot
+  jmp @sword
 + jsr CoopP2TakeHit
 @sword:
   ;; Player 2's sword, on odd frames like vanilla's sword entry.
@@ -1443,6 +1482,40 @@ CoopP2Collisions:
   ldy CoopTarget
   COOP_FAR $90aa     ; CollisionJump_00_SwordHitsEnemy (X = sword, Y = enemy)
 @done:
+  rts
+
+;;; A status projectile (CoopTarget, status A in its $0560) hit player 2.
+;;; Mirrors PlayerHit_ApplyProjectileStatus without the status message:
+;;; 1 = paralysis (blocked by the Sacred or Psycho Shield; player 1's
+;;; shield stands in for player 2's), 2 = stone and 3 = MP drain (not
+;;; supported for player 2 yet: they pass through), anything else = curse.
+CoopP2StatusShot:
+  cmp #$01
+  bne @notParalysis
+  lda $0714          ; EquippedShield
+  cmp #$06           ; SHIELD_SACRED
+  beq @remove
+  cmp #$08           ; SHIELD_PSYCHO
+  beq @remove
+  lda P2Status
+  and #$f0
+  ora #$01           ; STATUS_PARALYZED
+  sta P2Status
+  lda #$44           ; SFX_PARALYZED
+  jsr $c125          ; StartAudioTrack
+  jmp @remove
+@notParalysis:
+  cmp #$02           ; stone: changes the global palette, not supported
+  beq @pass
+  cmp #$03           ; MP drain web: not supported
+  beq @pass
+  lda #$04           ; STATUS_CURSED (vanilla stores it outright)
+  sta P2Status
+@remove:
+  ldy CoopTarget
+  lda #$00
+  sta $04a0,y
+@pass:
   rts
 
 ;;; Targets $0d..$1e, as in CollisionTable.
@@ -1479,14 +1552,17 @@ CoopP2TakeHit:
   pha
   lda $0640
   pha
-  ;; No status effects for player 2 yet (M3b): PlayerHit_ApplyStatus
-  ;; poisons unless EquippedArmor is Battle Armor, and poisoning sets
-  ;; GameMode $10 (status message) for everyone.  Damage uses the defense
-  ;; values ($0400/$0401), not this byte, so it is unaffected.
-  lda $0713          ; EquippedArmor
+  ;; Contact poison (PlayerHit_ApplyStatus) lands in P2Status, swapped in
+  ;; below; player 1's armor counts as player 2's for the Battle Armor
+  ;; check.  It also shows the "poisoned" message by setting GameMode $10
+  ;; and $06c3/$06e3, which would stop the game for both players, so
+  ;; those are put back afterwards.
+  lda $41            ; GameMode
   pha
-  lda #$07           ; ARMOR_BATTLE
-  sta $0713
+  lda $06c3
+  pha
+  lda $06e3
+  pha
   jsr CoopSwapP2
   jsr CoopSwapVitals
   ldx #$01
@@ -1495,7 +1571,11 @@ CoopP2TakeHit:
   jsr CoopSwapVitals
   jsr CoopSwapP2
   pla
-  sta $0713
+  sta $06e3
+  pla
+  sta $06c3
+  pla
+  sta $41
   pla
   sta $0640
   pla
