@@ -69,7 +69,12 @@ P2Down        = $62c4  ; nonzero: player 2 is down (0 HP, frozen)
 CoopFarTarget = $62c5  ; 2 bytes: bank $0d routine for CoopCall0d
 CoopFarA      = $62c7  ; A in/out for CoopCall0d
 CoopTarget    = $62c8  ; target slot of player 2's collision
-;;; $62c9..$62db spare
+;;; M3b:
+P2HudHP       = $62c9  ; P2HP / P2MaxHP as last drawn in the status bar
+P2HudMax      = $62ca
+P2HudState    = $62cb  ; nonzero: player 2's readout is on screen
+P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
+;;; $62cd..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -208,6 +213,7 @@ CoopUpdateObjects:
   jsr $cccc ; object loop: every slot's action, including the hero's
   lda P2Active
   ora P2Slot  ; also run once after leaving, to despawn
+  ora P2HudState ; ... and to clear the HP readout
   beq +
    lda #COOP_BANK
    jsr BankSwitch8k_8000
@@ -544,8 +550,127 @@ CoopSwapP2:
 COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
+;;; ----------------------------------------------------------------
+;;; Player 2's HP readout (M3b): "2 Lf HHH/MMM" in the status bar.
+;;;
+;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
+;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
+;;; row $2b40 is Pw, the charge arrows and the ball indicators, then Dl and
+;;; Ex; row $2b60 has the enemy HP readout at $2b62..$2b6a (_ENEMY_HP),
+;;; blanks to $2b75, then Mp.  The enemy name goes on the border row $2b82.
+;;; So player 2's readout uses row 3, $2b6c..$2b74, with the randomizer's
+;;; HUD layout (_UPDATE_HUD; with the vanilla HUD (Vh) it is not shown).
+;;;
+;;; Tiles are staged at $6071..$6079 and queued like UpdateHPDisplayInternal
+;;; does.  In normal play the staging area at $6000 is used by map
+;;; scrolling (from $6000), player 1's bar and the charge meter
+;;; ($6060..$6070), the status numbers (from $607b), map rows ($6080..) and
+;;; the enemy readouts ($60a0, $60b0); $60c0.. is used by Draygon 2.
+;;; Redrawn only when P2HP or P2MaxHP change, plus every 256 frames in
+;;; case a full status bar redraw (menus, map loads) wiped it.
+.ifdef _UPDATE_HUD
+COOP_HUD_BUF = $71         ; staging offset: $6071..$6079
+COOP_HUD_PPU_HI = $2b      ; PPU $2b6c
+COOP_HUD_PPU_LO = $6c
+
+.reloc
+CoopP2Hud:
+  lda P2Active
+  bne @joined
+  lda P2HudState
+  bne +
+  rts                ; not joined and not shown
++ lda #$00
+  sta P2HudState
+  lda #COOP_HUD_BUF
+  jsr $c72b          ; WaitForNametableBufferAvailable
+  lda #$20           ; blank tile
+  ldx #$08
+-  sta $6000+COOP_HUD_BUF,x
+   dex
+  bpl -
+  jmp @stage
+@joined:
+  dec P2HudTimer
+  beq @draw          ; periodic refresh
+  lda P2HudState
+  beq @draw
+  lda P2HP
+  cmp P2HudHP
+  bne @draw
+  lda P2MaxHP
+  cmp P2HudMax
+  bne @draw
+  rts
+@draw:
+  lda #$01
+  sta P2HudState
+  lda P2HP
+  sta P2HudHP
+  lda P2MaxHP
+  sta P2HudMax
+  lda #COOP_HUD_BUF
+  jsr $c72b          ; WaitForNametableBufferAvailable
+  lda #$02           ; "2"
+  sta $6000+COOP_HUD_BUF
+  lda #$80           ; "Lf"
+  sta $6000+COOP_HUD_BUF+1
+  lda P2HP
+  ldx #COOP_HUD_BUF+2
+  jsr @digits
+  lda #$9d           ; "/"
+  sta $6000+COOP_HUD_BUF+5
+  lda P2MaxHP
+  ldx #COOP_HUD_BUF+6
+  jsr @digits
+@stage:
+  jsr $c43e          ; DisableNMI
+  ldx $0b            ; NametableBufferWriteOffset
+  lda #COOP_HUD_PPU_HI
+  sta $6200,x
+  lda #COOP_HUD_PPU_LO
+  sta $6201,x
+  lda #$09
+  sta $6202,x
+  lda #COOP_HUD_BUF
+  sta $6203,x
+  txa
+  clc
+  adc #$04
+  and #$1f
+  sta $0b
+  jmp $c436          ; EnableNMI
+;;; Three decimal digits of A at $6000+X..X+2 (digit tiles are $00..$09).
+@digits:
+  ldy #$00
+-  cmp #100
+   bcc +
+   sbc #100
+   iny
+  bne -
++ pha
+  tya
+  sta $6000,x
+  pla
+  ldy #$00
+-  cmp #10
+   bcc +
+   sbc #10
+   iny
+  bne -
++ pha
+  tya
+  sta $6001,x
+  pla
+  sta $6002,x
+  rts
+.endif ; _UPDATE_HUD
+
 .reloc
 CoopUpdateP2:
+.ifdef _UPDATE_HUD
+  jsr CoopP2Hud
+.endif
   ;; Player 2 left: remove their object.
   lda P2Active
   bne +
