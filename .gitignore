@@ -31,3 +31,7 @@ npm-debug.log
 # co-op emulator test logs
 test/coop/*.log
 test/coop/*.png
+
+# co-op release outputs (contain or produce ROM data; publish the .bps on a release)
+release/
+*.bps

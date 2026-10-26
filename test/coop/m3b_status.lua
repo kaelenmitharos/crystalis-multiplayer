@@ -89,6 +89,11 @@ local function findEnemy(exclude)
   end
   return nil
 end
+-- Is object e still a live enemy (not dying, $7d, or gone)?
+local function alive(e)
+  local act = e and rd(0x04a0 + e) or 0
+  return act ~= 0 and (act & 0x7f) ~= 0x7d and rd(0x03c0 + e) ~= 0xff
+end
 -- Put object e at player 2's ground position plus (dx, dy).
 local function putNearP2(e, dx, dy)
   local x = rd(P2Ground + 1) * 256 + rd(P2Ground) + dx
@@ -114,11 +119,21 @@ local function invariants()
 end
 -- Turn enemy e into a status shot (as vanilla projectiles are: $0540 = $ff,
 -- status in $0560) and keep it on player 2.
+-- If the enemy despawns before it reaches player 2, use another.
 local function statusShot(e, st)
   wr(0x0540 + e, 0xff); wr(0x0560 + e, st)
+  local used = false
   atSafePoint = function()
+    if not alive(s.e) and not used and status(rd(P2Status)) ~= st then
+      local n = findEnemy()
+      if n then s.e = n; wr(0x0540 + n, 0xff); wr(0x0560 + n, st) end
+    end
+    if status(rd(P2Status)) == st then used = true end
+    e = s.e
     if rd(0x04a0 + e) ~= 0 then putNearP2(e, 0, 0) end
     wr(P2Invuln, 0)
+    -- Other enemies may wander in too: don't let them take player 2 down.
+    if rd(P2Down) == 0 and rd(P2HP) < 30 then wr(P2HP, 40) end
   end
 end
 
