@@ -171,6 +171,30 @@ local steps = {
     end
     if since() > 300 then return fail("the enemy never hurt player 2") end
   end,
+  -- 5b: a poisonous enemy (level bit 7, 50% per hit) keeps hitting player 2:
+  --     player 2 takes damage, but player 1 is never poisoned and the game
+  --     never stops for the "poisoned" status message (GameMode $10).
+  function()
+    if since() == 1 then
+      if not (s.e and rd(0x04a0 + s.e) ~= 0) then s.e = findEnemy() end
+      if not s.e then return fail("no enemy left") end
+      wr(0x0420 + s.e, rd(0x0420 + s.e) | 0x80)
+      s.status, s.hits, s.lastHP = rd(0x0710), 0, rd(P2HP)
+      atSafePoint = function()
+        if rd(0x04a0 + s.e) ~= 0 then putNearP2(s.e, 0, 0) end
+        wr(P2Invuln, 0)
+        if rd(P2HP) < 20 then wr(P2HP, 40) end
+      end
+    end
+    if rd(0x41) == 0x10 then return fail("game switched to the status message") end
+    if rd(0x0710) ~= s.status then return fail(string.format("PlayerStatus changed %02x -> %02x", s.status, rd(0x0710))) end
+    if rd(P2HP) < s.lastHP then s.hits = s.hits + 1 end
+    s.lastHP = rd(P2HP)
+    if since() == 300 then
+      if s.hits < 4 then return fail("player 2 was only hit " .. s.hits .. " times") end
+      return nextStep(string.format("%d poisonous hits on player 2; player 1 not poisoned, no status message", s.hits))
+    end
+  end,
   -- 6: at 0 HP player 2 is down (still joined); player 1 is unaffected.
   function()
     if since() == 1 then
@@ -195,6 +219,8 @@ local steps = {
   -- 7: clear the enemies, put player 1 beside player 2: revive after ~60 frames.
   function()
     if since() == 1 then
+      s.loc = rd(CurLoc)
+      log(string.format("  P1 (%d,%d) P2 ground (%d,%d) loc %02x", rd(0x90)*256+rd(0x70), rd(0xd0)*240+rd(0xb0), rd(P2Ground+1)*256+rd(P2Ground), rd(P2Ground+3)*240+rd(P2Ground+2), s.loc))
       for e = 0x0d, 0x1e do
         if e ~= rd(P2Slot) and rd(0x04a0 + e) ~= 0 then wr(0x04a0 + e, 0) end
       end
@@ -208,11 +234,36 @@ local steps = {
     end
     if rd(P2Down) == 0 then
       local want = math.max(1, math.floor(rd(P2MaxHP) / 4))
-      if since() < 50 then return fail("revived too early (" .. since() .. " frames)") end
+      if since() < 50 then return fail(string.format("revived too early (%d frames; location %02x, was %02x)", since(), rd(CurLoc), s.loc or 0)) end
       if rd(P2HP) ~= want then return fail(string.format("revived with %d HP, want %d", rd(P2HP), want)) end
       return nextStep(string.format("revived after %d frames with %d HP", since(), rd(P2HP)))
     end
     if since() > 300 then return fail("player 2 never revived") end
+  end,
+  -- 9: down again, away from player 1 (no proximity revive); a map
+  --     change (wild warp) revives player 2 beside player 1.
+  function()
+    if since() == 1 then
+      s.loc = rd(CurLoc)
+      atSafePoint = function()
+        if rd(CurLoc) == s.loc and rd(P2Down) == 0 and not s.downed then
+          local x = rd(0x90) * 256 + rd(0x70) + 64
+          wr(P2Ground, x % 256); wr(P2Ground + 1, math.floor(x / 256))
+          wr(P2HP, 0); wr(P2Down, 1); wr(0x6287, 0)
+          s.downed = true
+        end
+      end
+    end
+    if since() >= 30 and since() < 42 then pad1 = {a = true, b = true} end
+    if since() >= 36 and since() < 39 then pad1 = {a = true, b = true, start = true} end
+    if since() == 29 and rd(P2Down) == 0 then return fail("player 2 not down before the warp") end
+    if rd(CurLoc) ~= s.loc and inGame() and since() > 60 then
+      if rd(P2Down) ~= 0 then return fail("still down on the new map") end
+      local want = math.max(1, math.floor(rd(P2MaxHP) / 4))
+      if rd(P2HP) ~= want then return fail(string.format("HP %d after the map change, want %d", rd(P2HP), want)) end
+      return nextStep(string.format("map %02x -> %02x revived player 2 with %d HP", s.loc, rd(CurLoc), rd(P2HP)))
+    end
+    if since() > 1500 then return fail("no map change") end
   end,
   function() finish(0, "ALL PASS") end,
 }

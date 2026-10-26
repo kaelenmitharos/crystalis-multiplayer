@@ -1241,17 +1241,26 @@ CoopGetSwordSlot:
 .reloc
 CoopP2Collisions:
   lda P2Down
-  bne @done
+  bne @exit
   lda $41            ; normal play only
   cmp #$08
   beq +
   cmp #$07
-  bne @done
+  bne @exit
 + ldx P2Slot
   lda $04a0,x
   cmp #COOP_P2_ACTION
-  bne @done
-  ;; Enemies and their shots touching player 2's body.
+  beq @body
+@exit:
+  rts
+@body:
+  ;; Enemies and their shots touching player 2's body, on even frames
+  ;; (the sword below takes the odd ones), so player 2 adds at most one
+  ;; CheckHitbox per frame.  Measured: checking the body every frame took
+  ;; lag frames from 8% to 17% in the busy-room stress test.
+  lda $08
+  lsr
+  bcs @sword
   lda P2Invuln
   bne @sword
   lda $03a1          ; the hero's collision plane
@@ -1273,7 +1282,16 @@ CoopP2Collisions:
   and #$7f
   cmp #$7b           ; a coin: leave it for player 1
   beq @sword
-  jsr CoopP2TakeHit
+  ;; Status projectiles (paralysis, stone, MP drain, curse: $0540 = $ff
+  ;; with a status in $0560) deal no damage in vanilla and only apply a
+  ;; status, which player 2 doesn't have yet (M3b).  The curse path also
+  ;; recomputes player 1's equipment.  So they pass through player 2.
+  lda $0540,y
+  cmp #$ff
+  bne +
+  lda $0560,y
+  bne @sword
++ jsr CoopP2TakeHit
 @sword:
   ;; Player 2's sword, on odd frames like vanilla's sword entry.
   lda $08
@@ -1336,6 +1354,14 @@ CoopP2TakeHit:
   pha
   lda $0640
   pha
+  ;; No status effects for player 2 yet (M3b): PlayerHit_ApplyStatus
+  ;; poisons unless EquippedArmor is Battle Armor, and poisoning sets
+  ;; GameMode $10 (status message) for everyone.  Damage uses the defense
+  ;; values ($0400/$0401), not this byte, so it is unaffected.
+  lda $0713          ; EquippedArmor
+  pha
+  lda #$07           ; ARMOR_BATTLE
+  sta $0713
   jsr CoopSwapP2
   jsr CoopSwapVitals
   ldx #$01
@@ -1343,6 +1369,8 @@ CoopP2TakeHit:
   COOP_FAR $9357     ; CollisionJump_01_EnemyHitsPlayer
   jsr CoopSwapVitals
   jsr CoopSwapP2
+  pla
+  sta $0713
   pla
   sta $0640
   pla
