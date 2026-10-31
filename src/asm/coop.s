@@ -227,6 +227,28 @@ CoopUpdateObjects:
    jsr BankSwitch16k
 + rts
 
+;;; Shops and inns (game modes $20..$24) start with a walk-in animation
+;;; and redraw every object sprite on the way out, so player 2's sprite
+;;; was left standing in the doorway in whatever pose it had.  Remove it
+;;; first; player 2 comes back beside player 1 when the location reloads.
+.reloc
+CoopShopEnter:
+  ldx P2Slot
+  beq +
+   lda #$00
+   sta $04a0,x
++ jmp $da0c          ; the shop walk-in
+.org $d985           ; MainGameModeJump_20_ArmorShop
+  jsr CoopShopEnter
+.org $d98e           ; MainGameModeJump_21_ToolShop
+  jsr CoopShopEnter
+.org $d997           ; MainGameModeJump_22_Inn
+  jsr CoopShopEnter
+.org $d9ad           ; MainGameModeJump_23_PawnShop
+  jsr CoopShopEnter
+.org $d9c1           ; MainGameModeJump_24_EmptyShop
+  jsr CoopShopEnter
+
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
 ;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
 ;;; back through CoopFarA; the carry comes back.  The extra call level
