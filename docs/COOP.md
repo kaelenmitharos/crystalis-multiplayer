@@ -7,9 +7,13 @@ revived. Player 1 still drives the story (talking, items, exits), and the
 camera follows the point between the two heroes.
 
 The patch is built from this repository (the Crystalis Randomizer) with
-item, map, shop and wild-warp shuffling turned off, so the game plays like
-the original apart from the co-op changes and the randomizer's usual
-quality-of-life fixes. The flags are `Dn Vmsw Cp` and the seed is 0.
+all shuffling turned off: items, chests and mimics, monsters, maps, shops
+and wild warp are where they are in the original, and the randomizer's
+joke item and monster names are off. The game plays like the original
+apart from the co-op changes and the randomizer's usual quality-of-life
+fixes (for example, the Love Pendant under the Underground Channel is
+picked up from the dolphin). The flags are `Dn Ec Et Vemsw Cp` and the
+seed is 0.
 
 The patch contains no game data. You need your own copy of the game.
 

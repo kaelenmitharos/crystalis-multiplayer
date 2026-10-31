@@ -1,5 +1,5 @@
 -- M1 co-op input test (player 2 join/leave, pad 1 shortcuts, reset init).
--- Build the ROM with: --flags="Dn Vmsw Cp" (needs the default controller
+-- Build the ROM with: --flags="Dn Ec Et Vemsw Cp" (needs the default controller
 -- shortcuts; a Qc build has no Select+B / Start+A+B shortcuts).
 --
 -- Runs on both emulators:

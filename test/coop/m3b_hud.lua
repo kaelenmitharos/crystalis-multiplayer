@@ -1,5 +1,5 @@
 -- M3b co-op test: player 2's HP readout in the status bar ("2 Lf HHH/MMM"
--- at PPU $2b6c).  Build with --flags="Dn Vmsw Cp" (needs the updated HUD,
+-- at PPU $2b6c).  Build with --flags="Dn Ec Et Vemsw Cp" (needs the updated HUD,
 -- i.e. no Vh); run like m1_input.lua (see its header for the commands).
 --
 -- Result is the exit code:

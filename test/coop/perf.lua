@@ -1,5 +1,5 @@
 -- CPU headroom check for co-op (MesenCE only; uses its setInput and
--- callbackType API).  Build with --flags="Dn Vmsw Cp"; run like m1_input.lua.
+-- callbackType API).  Build with --flags="Dn Ec Et Vemsw Cp"; run like m1_input.lua.
 -- Wild warps 4 times (to location $14), then measures 600 frames each:
 -- player 1 standing alone, player 1 walking a square alone (the camera
 -- scrolls, which costs CPU in vanilla too), and player 2 walking the same

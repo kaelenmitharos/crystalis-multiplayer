@@ -860,6 +860,14 @@ class Vanilla extends FlagSection {
            these changes, restoring shops to be completely vanilla.`,
   });
 
+  static readonly Enemies = Vanilla.flag('Ve', {
+    name: 'Vanilla enemies',
+    text: `By default, the monsters on each map are shuffled, their spawn
+           positions are moved around, and mimics are swapped with random
+           chests.  This flag keeps the original monsters, positions and
+           mimics.  Two-player co-op (Cp) always does this too.`,
+  });
+
   static readonly WildWarp = Vanilla.flag('Vw', {
     name: 'Vanilla wild warp',
     text: `By default, Wild Warp is nerfed to only return to Mezame Shrine.
@@ -1111,7 +1119,14 @@ export class FlagSet {
     return this.check(EasyMode.PreserveUniqueChecks);
   }
   shuffleMimics(): boolean {
-    return this.check(EasyMode.NoShuffleMimics, false);
+    return this.check(EasyMode.NoShuffleMimics, false) && !this.vanillaEnemies();
+  }
+  /** Original monsters, spawn positions and mimics (Ve, or co-op). */
+  vanillaEnemies(): boolean {
+    return this.check(Vanilla.Enemies) || this.coop();
+  }
+  shuffleMonsterPositions(): boolean {
+    return !this.vanillaEnemies();
   }
 
   buffDeosPendant(): boolean {
@@ -1134,7 +1149,7 @@ export class FlagSet {
     return this.check(World.RandomizeSpriteColors);
   }
   shuffleMonsters(): boolean {
-    return true; // this.check('Mr');
+    return !this.vanillaEnemies(); // this.check('Mr');
   }
   shuffleShops(): boolean {
     return this.check(Vanilla.Shops, false);
