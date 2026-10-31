@@ -74,8 +74,9 @@ Player 1 plays as in the original. Player 2, on controller 2:
 
 - The two heroes can't get further apart than about two thirds of the
   screen: the camera keeps both in view.
-- Player 2's HP is shown on the status bar's bottom row as `2 HHH/MMM`,
-  next to the MP.
+- Player 2's HP is shown on the status bar's bottom row as `2` and a life
+  bar, next to the MP. Each tile of player 2's bar is 32 HP (player 1's
+  are 16), so it fits even at full health.
 - At 0 HP player 2 is down: they freeze where they fell and blink. Player 1
   revives them by standing next to them for about a second, or by going to
   another map. Player 2 comes back with a quarter of their HP. The game is

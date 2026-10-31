@@ -1,5 +1,5 @@
--- M3b co-op test: player 2's HP readout in the status bar ("2 Lf HHH/MMM"
--- at PPU $2b6c).  Build with --flags="Dn Ec Et Vemsw Cp" (needs the updated HUD,
+-- M3b co-op test: player 2's HP readout in the status bar ("2" and a
+-- life bar of 8 tiles, 32 HP each, at PPU $2b6c; digits before v0.2).  Build with --flags="Dn Ec Et Vemsw Cp" (needs the updated HUD,
 -- i.e. no Vh); run like m1_input.lua (see its header for the commands).
 --
 -- Result is the exit code:
@@ -67,11 +67,23 @@ local function inGame()
   local n = 0; for _, v in ipairs(hist) do n = n + v end
   return rd(0x40) == 1 and n >= 15
 end
--- Expected tiles for "2 Lf HHH/MMM".
+-- Expected tiles for "2" and the bar: max/32 tiles (rounded up); full
+-- tiles ($88) for each 32 HP, then the remainder in quarters ($8b..$89,
+-- at least $8b if any HP is left), then empty tiles ($8c), then blanks.
 local function expect(hp, max)
-  local function d3(v) return math.floor(v / 100), math.floor(v / 10) % 10, v % 10 end
-  local a, b, c = d3(hp); local x, y, z = d3(max)
-  return {0x02, 0x80, a, b, c, 0x9d, x, y, z}
+  local tiles = math.floor(max / 32) + ((max % 32 > 0) and 1 or 0)
+  local full = math.floor(hp / 32)
+  local q = math.floor((hp % 32) / 8)
+  if q == 0 and hp % 32 > 0 then q = 1 end
+  local partial = ({0x8c, 0x8b, 0x8a, 0x89})[q + 1]
+  local t = {0x02}
+  for i = 0, 7 do
+    if i < full then t[#t + 1] = 0x88
+    elseif i >= tiles then t[#t + 1] = 0x20
+    elseif i == full then t[#t + 1] = partial
+    else t[#t + 1] = 0x8c end
+  end
+  return t
 end
 local function same(t, u)
   for i = 1, #u do if t[i] ~= u[i] then return false end end

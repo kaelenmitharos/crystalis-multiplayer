@@ -631,7 +631,10 @@ COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
 ;;; ----------------------------------------------------------------
-;;; Player 2's HP readout (M3b): "2 Lf HHH/MMM" in the status bar.
+;;; Player 2's HP readout (M3b; a bar since v0.2): "2" and a life bar in
+;;; the status bar, 8 tiles of 32 HP each (player 1's are 16 HP).  The
+;;; v0.1 digits "2 Lf HHH/MMM" ran into the enemy HP and MP digits on
+;;; either side, and the testers wanted a bar like player 1's.
 ;;;
 ;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
 ;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
@@ -693,16 +696,56 @@ CoopP2Hud:
   jsr $c72b          ; WaitForNametableBufferAvailable
   lda #$02           ; "2"
   sta $6000+COOP_HUD_BUF
-  lda #$80           ; "Lf"
-  sta $6000+COOP_HUD_BUF+1
-  lda P2HP
-  ldx #COOP_HUD_BUF+2
-  jsr @digits
-  lda #$9d           ; "/"
-  sta $6000+COOP_HUD_BUF+5
+  ;; A life bar like player 1's, but 32 HP per tile so 255 fits in 8:
+  ;; CoopTmp = tiles (max HP / 32, rounded up), CoopTmp+1 = full tiles
+  ;; (HP / 32), Y = the tile after them (HP % 32 in quarters).
   lda P2MaxHP
-  ldx #COOP_HUD_BUF+6
-  jsr @digits
+  lsr
+  lsr
+  lsr
+  lsr
+  lsr
+  sta CoopTmp
+  lda P2MaxHP
+  and #$1f
+  beq +
+   inc CoopTmp
++ lda P2HP
+  lsr
+  lsr
+  lsr
+  lsr
+  lsr
+  sta CoopTmp+1
+  lda P2HP
+  and #$1f
+  lsr
+  lsr
+  lsr
+  tax
+  bne +
+  lda P2HP           ; a little HP left: still show a sliver
+  and #$1f
+  beq +
+   inx
++ ldy CoopHudPartial,x
+  ldx #$00
+@bar:
+  lda #$88           ; full
+  cpx CoopTmp+1
+  bcc @put
+  lda #$20           ; past the end of the bar: blank
+  cpx CoopTmp
+  bcs @put
+  tya                ; partial
+  cpx CoopTmp+1
+  beq @put
+  lda #$8c           ; empty
+@put:
+  sta $6000+COOP_HUD_BUF+1,x
+  inx
+  cpx #$08
+  bne @bar
 @stage:
   jsr $c43e          ; DisableNMI
   ldx $0b            ; NametableBufferWriteOffset
@@ -720,30 +763,9 @@ CoopP2Hud:
   and #$1f
   sta $0b
   jmp $c436          ; EnableNMI
-;;; Three decimal digits of A at $6000+X..X+2 (digit tiles are $00..$09).
-@digits:
-  ldy #$00
--  cmp #100
-   bcc +
-   sbc #100
-   iny
-  bne -
-+ pha
-  tya
-  sta $6000,x
-  pla
-  ldy #$00
--  cmp #10
-   bcc +
-   sbc #10
-   iny
-  bne -
-+ pha
-  tya
-  sta $6001,x
-  pla
-  sta $6002,x
-  rts
+;;; Player 1's bar tiles for 0..3 quarters of a tile.
+CoopHudPartial:
+  .byte $8c,$8b,$8a,$89
 .endif ; _UPDATE_HUD
 
 .reloc
