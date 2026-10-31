@@ -75,7 +75,9 @@ P2HudMax      = $62ca
 P2HudState    = $62cb  ; nonzero: player 2's readout is on screen
 P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
 CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
-;;; $62ce..$62db spare
+;;; v0.2:
+P2PlaceTimer  = $62ce  ; frames left to re-check player 2's ground after a spawn
+;;; $62cf..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -442,6 +444,7 @@ COOP_SLOT0_FIELDS = 17
 ;;; $03a0 (hitbox) is deliberately left out: player 2's slot keeps
 ;;; collision plane 0, and slot 1's value never changes.
 
+COOP_SETTLE_FRAMES = 60   ; see CoopSettleP2
 COOP_P2_ACTION = $09        ; null entry in ObjectActionJumpTable
 COOP_FIRST_SLOT = $0d       ; lowest slot player 2 may use
 COOP_LAST_SLOT = $1d        ; highest ($1e is the dolphin, $1f is scratch)
@@ -532,6 +535,8 @@ CoopSpawnP2:
   lda $6c ; CurrentLocation
   sta P2Loc
   jsr CoopPlaceP2  ; one tile beside player 1, on walkable ground
+  lda #COOP_SETTLE_FRAMES
+  sta P2PlaceTimer
   ;; HP: full on first join; a new map (or the end of a set piece)
   ;; revives a downed player 2.
   lda P2Down
@@ -768,7 +773,7 @@ CoopUpdateP2:
   lda P2Down
   beq +
    jmp CoopP2DownFrame
-+
++ jsr CoopSettleP2
   ;; Select on pad 2: back next to player 1.
   lda P2Pressed
   and #$20
@@ -1159,61 +1164,58 @@ CoopClampP2:
   jmp CoopPlaceP2
 + rts
 
-;;; Places player 2 one tile beside player 1 on walkable ground: left,
-;;; right, below, above, else on top of player 1.
+;;; Places player 2 beside player 1 on walkable ground: one tile left,
+;;; right, below or above; then the diagonals; then two tiles away; else
+;;; on top of player 1.  Each candidate must be on screen, and the
+;;; hero's own terrain check must find no pit, wall, slide or pain there.
+COOP_PLACE_COUNT = 12
 CoopPlaceOffX:
-  .byte $f0,$10,$00,$00   ; -16, +16, 0, 0
-CoopPlaceOffXHi:
-  .byte $ff,$00,$00,$00
+  .byte $f0,$10,$00,$00, $f0,$10,$f0,$10, $e0,$20,$00,$00
 CoopPlaceOffY:
-  .byte $00,$00,$10,$f0   ; 0, 0, +16, -16
+  .byte $00,$00,$10,$f0, $10,$10,$f0,$f0, $00,$00,$20,$e0
 CoopPlaceP2:
   lda #$00
   sta CoopTmp           ; candidate index
 @next:
   ldy CoopTmp
-  lda $70
+  ;; X: player 1's X plus a signed offset.
+  lda CoopPlaceOffX,y
+  sta CoopTmp+1
   clc
-  adc CoopPlaceOffX,y
+  adc $70
   sta CoopPB
-  lda $90
-  adc CoopPlaceOffXHi,y
+  lda #$00
+  bit CoopTmp+1
+  bpl +
+   lda #$ff
++ adc $90
   sta CoopPB+1
+  ;; Y: player 1's Y plus a signed offset, wrapping at 240 per screen.
   lda $d0
   sta CoopPB+3
   lda CoopPlaceOffY,y
-  beq @y0
   bmi @yUp
-   lda $b0
    clc
-   adc #$10
+   adc $b0
+   bcs +                ; past 255: certainly past 240
    cmp #240
    bcc @yStore
-   sbc #240             ; carry is set here
++  sec
+   sbc #240
    inc CoopPB+3
-   bcs @yStore          ; (always)
-@yUp:
-   lda $b0
-   sec
-   sbc #$10
-   bcs @yStore
-   adc #240             ; carry is clear here
-   dec CoopPB+3
    jmp @yStore
-@y0:
-  lda $b0
+@yUp:
+  clc
+  adc $b0               ; $b0 - |offset|: carry set if no borrow
+  bcs @yStore
+   sec
+   sbc #16              ; (A + 256) - 16 = A + 240
+   dec CoopPB+3
 @yStore:
   sta CoopPB+2
   jsr CoopPBOnScreen
   bcc @reject
-  ;; Terrain at the candidate, via the hero's own check.
-  ldx #$03
--  lda CoopPB,x
-   sta $34,x
-   dex
-  bpl -
-  jsr CoopCheckTerrain
-  lda $20
+  jsr CoopTerrainAtPB
   and #$a3              ; pit, impassable on foot, slide, pain
   bne @reject
   ldx #$03
@@ -1225,7 +1227,7 @@ CoopPlaceP2:
 @reject:
   inc CoopTmp
   lda CoopTmp
-  cmp #$04
+  cmp #COOP_PLACE_COUNT
   bne @next
   ;; Nowhere free: on top of player 1.
   jsr CoopSetPAToP1
@@ -1235,6 +1237,37 @@ CoopPlaceP2:
    dex
   bpl -
   jmp CoopSyncP2Sprite
+
+;;; Terrain bits at CoopPB in A (see CoopCheckTerrain), via the hero's
+;;; own check.
+CoopTerrainAtPB:
+  ldx #$03
+-  lda CoopPB,x
+   sta $34,x
+   dex
+  bpl -
+  jsr CoopCheckTerrain
+  lda $20
+  rts
+
+;;; For a second after (re)spawning, check the ground under player 2 each
+;;; frame and place them again if it is a wall or a pit.  Right after a
+;;; map change the first placement can see the wrong terrain (the testers
+;;; found player 2 inside the wall on entering some caves).
+CoopSettleP2:
+  lda P2PlaceTimer
+  beq +
+  dec P2PlaceTimer
+  ldx #$03
+-  lda P2Ground,x
+   sta CoopPB,x
+   dex
+  bpl -
+  jsr CoopTerrainAtPB
+  and #$03              ; only walls and pits (ice floors slide)
+  beq +
+   jmp CoopPlaceP2
++ rts
 
 ;;; Copies player 2's ground position to their sprite slot.
 CoopSyncP2Sprite:
