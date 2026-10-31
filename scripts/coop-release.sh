@@ -16,7 +16,7 @@ cd "$ROOT"
 SRC=${1:-Crystalis.nes}
 OUT=${2:-release}
 EXPECTED_SRC_SHA1=fd0dcde4f1708b30d5c3de1e463f1dde89c5cb64
-FLAGS="Dn Vmsw Cp"   # co-op on; items, maps, shops and wild warp unshuffled
+FLAGS="Dn Ec Et Vemsw Cp"   # co-op on; vanilla items, enemies, maps, shops, wild warp; no jokes
 SEED=0
 VERSION=$(sed -n "s/^export const COOP_VERSION = '\(.*\)';/\1/p" src/js/patch.ts)
 NAME="crystalis-coop-v$VERSION"

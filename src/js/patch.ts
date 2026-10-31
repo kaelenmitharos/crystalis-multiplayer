@@ -282,7 +282,7 @@ async function shuffleInternal(rom: Uint8Array,
   fixEntranceTriggers(parsed);
   if (flags.randomizeMaps()) shuffleMazes(parsed, flags, random);
   writeLocationsFromMeta(parsed);
-  shuffleMonsterPositions(parsed, random);
+  if (flags.shuffleMonsterPositions()) shuffleMonsterPositions(parsed, random);
 
   // NOTE: Shuffle mimics and monsters *after* shuffling maps, but before logic.
   if (flags.shuffleMimics()) shuffleMimics(parsed, flags, random);
@@ -779,7 +779,7 @@ const storyMode = (rom: Rom) => {
 };
 
 // Version of the two-player co-op patch (flag Cp), shown on the title screen.
-export const COOP_VERSION = '0.1';
+export const COOP_VERSION = '0.2';
 
 // Stamp the ROM
 export function stampVersionSeedAndHash(rom: Uint8Array,

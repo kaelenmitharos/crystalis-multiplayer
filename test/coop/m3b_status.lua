@@ -1,6 +1,6 @@
 -- M3b co-op test: status effects for player 2 (poison, paralysis, curse)
 -- without touching player 1 or showing the status message; poison drains
--- P2HP; reviving clears the status.  Build with --flags="Dn Vmsw Cp"; run like m1_input.lua (see
+-- P2HP; reviving clears the status.  Build with --flags="Dn Ec Et Vemsw Cp"; run like m1_input.lua (see
 -- its header for the MesenCE / Mesen 0.9.9 commands).
 --
 -- Enemies are moved into place with RAM writes, done right after the co-op

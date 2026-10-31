@@ -75,7 +75,10 @@ P2HudMax      = $62ca
 P2HudState    = $62cb  ; nonzero: player 2's readout is on screen
 P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
 CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
-;;; $62ce..$62db spare
+;;; v0.2:
+P2PlaceTimer  = $62ce  ; frames left to re-check player 2's ground after a spawn
+P2Rejoined    = $62cf  ; nonzero: player 2 pressed Start to join since the last spawn
+;;; $62d0..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -128,6 +131,7 @@ CoopReadControllers:
    eor #$01
    sta P2Active
    beq ++
+    sta P2Rejoined     ; (A = 1) a downed player 2 stays down on rejoin
     lda #COOP_SFX_JOIN
     jmp $c125 ; StartAudioTrack
 ++  lda #COOP_SFX_LEAVE ; CoopUpdateP2 despawns player 2 next
@@ -222,6 +226,61 @@ CoopUpdateObjects:
    lda #$0d  ; leave bank $0d mapped, as the object loop does
    jsr BankSwitch16k
 + rts
+
+;;; Shops and inns (game modes $20..$24) start with a walk-in animation
+;;; and redraw every object sprite on the way out, so player 2's sprite
+;;; was left standing in the doorway in whatever pose it had.  Remove it
+;;; first; player 2 comes back beside player 1 when the location reloads.
+.reloc
+CoopShopEnter:
+  ldx P2Slot
+  beq +
+   lda #$00
+   sta $04a0,x
++ jmp $da0c          ; the shop walk-in
+.org $d985           ; MainGameModeJump_20_ArmorShop
+  jsr CoopShopEnter
+.org $d98e           ; MainGameModeJump_21_ToolShop
+  jsr CoopShopEnter
+.org $d997           ; MainGameModeJump_22_Inn
+  jsr CoopShopEnter
+.org $d9ad           ; MainGameModeJump_23_PawnShop
+  jsr CoopShopEnter
+.org $d9c1           ; MainGameModeJump_24_EmptyShop
+  jsr CoopShopEnter
+
+;;; Original-game bug (v0.2 fix): a status hit while the hero is stone
+;;; (e.g. a poisonous enemy) replaces the stone status, and the code that
+;;; ends stone ($efdb) only clears the grey tint ($07e4 = $4d) while the
+;;; status is still stone, so the hero could move again but stayed grey.
+;;; Replaces the "lda $0710 / and #$0f / cmp #$02 / bne" at $efdb: when
+;;; the hero isn't stone but still has the tint, clear it the same way.
+;;; Returns Z set if stone (vanilla carries on), Z clear otherwise.  It
+;;; runs with bank $1a mapped at $8000 ($efbc maps it), so it may live in
+;;; $1a or the fixed bank.
+.pushseg "1a", "fe", "ff"
+.reloc
+CoopStoneCheck:
+  lda $0710          ; PlayerStatus
+  and #$0f
+  cmp #$02           ; STATUS_STONE
+  beq +
+  lda $07e4
+  cmp #$4d           ; the stone tint
+  bne ++
+   lda #$00
+   sta $07e4
+   jsr $8c0e         ; LoadPalettesForLocation, as at $eff6
+++ lda #$01
++ rts
+.popseg
+.org $efdb
+  jsr CoopStoneCheck
+  bne $f01d          ; CheckPassiveEffects
+  nop
+  nop
+  nop
+  nop
 
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
 ;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
@@ -321,6 +380,8 @@ CoopHpGuard:
   jsr CoopChargeGuard
 .popseg
 
+;;; These two only run from bank $1a code, so they may live in $1a too.
+.pushseg "1a", "fe", "ff"
 .reloc
 CoopChargeGuard:
   lda CoopP2Running
@@ -353,6 +414,7 @@ CoopFindSlot:
 + sta $10
 @go:
   jmp $98b9 ; FindEmptySpawnSlot
+.popseg
 
 .pushseg "3a" ; COOP_BANK
 
@@ -442,6 +504,7 @@ COOP_SLOT0_FIELDS = 17
 ;;; $03a0 (hitbox) is deliberately left out: player 2's slot keeps
 ;;; collision plane 0, and slot 1's value never changes.
 
+COOP_SETTLE_FRAMES = 60   ; see CoopSettleP2
 COOP_P2_ACTION = $09        ; null entry in ObjectActionJumpTable
 COOP_FIRST_SLOT = $0d       ; lowest slot player 2 may use
 COOP_LAST_SLOT = $1d        ; highest ($1e is the dolphin, $1f is scratch)
@@ -518,6 +581,18 @@ CoopSpawnP2:
   lda $03a0,x
   and #$0f
   sta $03a0,x
+  ;; Rejoining (leave, then Start again) while down on the same map:
+  ;; back where they fell, still down.
+  lda P2Rejoined
+  beq @fresh
+  lda P2Down
+  beq @fresh
+  lda $6c ; CurrentLocation
+  cmp P2Loc
+  bne @fresh
+   jsr CoopSyncP2Sprite
+   jmp @hp
+@fresh:
   ;; Player 2's ground state starts as a copy of slot 0.
   ldx #COOP_SLOT0_FIELDS-1
 -  lda CoopSlot0FieldsLo,x
@@ -532,10 +607,16 @@ CoopSpawnP2:
   lda $6c ; CurrentLocation
   sta P2Loc
   jsr CoopPlaceP2  ; one tile beside player 1, on walkable ground
-  ;; HP: full on first join; a new map (or the end of a set piece)
-  ;; revives a downed player 2.
+  lda #COOP_SETTLE_FRAMES
+  sta P2PlaceTimer
+@hp:
+  ;; HP: full on first join, otherwise kept.  A new map (or the end of a
+  ;; set piece) revives a downed player 2, but leaving and joining again
+  ;; doesn't: they stay down until player 1 revives them.
   lda P2Down
   beq +
+   lda P2Rejoined
+   bne ++
    jsr CoopReviveP2
    jmp ++
 + lda P2HP
@@ -543,7 +624,9 @@ CoopSpawnP2:
    lda $03c0       ; PlayerMaxHP
    sta P2MaxHP
    sta P2HP
-++ sec
+++ lda #$00
+  sta P2Rejoined
+  sec
   rts
 
 ;;; Swaps slot 0's fields with P2Ground, and slot 1's fields with player
@@ -606,7 +689,10 @@ COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
 ;;; ----------------------------------------------------------------
-;;; Player 2's HP readout (M3b): "2 Lf HHH/MMM" in the status bar.
+;;; Player 2's HP readout (M3b; a bar since v0.2): "2" and a life bar in
+;;; the status bar, 8 tiles of 32 HP each (player 1's are 16 HP).  The
+;;; v0.1 digits "2 Lf HHH/MMM" ran into the enemy HP and MP digits on
+;;; either side, and the testers wanted a bar like player 1's.
 ;;;
 ;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
 ;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
@@ -668,16 +754,56 @@ CoopP2Hud:
   jsr $c72b          ; WaitForNametableBufferAvailable
   lda #$02           ; "2"
   sta $6000+COOP_HUD_BUF
-  lda #$80           ; "Lf"
-  sta $6000+COOP_HUD_BUF+1
-  lda P2HP
-  ldx #COOP_HUD_BUF+2
-  jsr @digits
-  lda #$9d           ; "/"
-  sta $6000+COOP_HUD_BUF+5
+  ;; A life bar like player 1's, but 32 HP per tile so 255 fits in 8:
+  ;; CoopTmp = tiles (max HP / 32, rounded up), CoopTmp+1 = full tiles
+  ;; (HP / 32), Y = the tile after them (HP % 32 in quarters).
   lda P2MaxHP
-  ldx #COOP_HUD_BUF+6
-  jsr @digits
+  lsr
+  lsr
+  lsr
+  lsr
+  lsr
+  sta CoopTmp
+  lda P2MaxHP
+  and #$1f
+  beq +
+   inc CoopTmp
++ lda P2HP
+  lsr
+  lsr
+  lsr
+  lsr
+  lsr
+  sta CoopTmp+1
+  lda P2HP
+  and #$1f
+  lsr
+  lsr
+  lsr
+  tax
+  bne +
+  lda P2HP           ; a little HP left: still show a sliver
+  and #$1f
+  beq +
+   inx
++ ldy CoopHudPartial,x
+  ldx #$00
+@bar:
+  lda #$88           ; full
+  cpx CoopTmp+1
+  bcc @put
+  lda #$20           ; past the end of the bar: blank
+  cpx CoopTmp
+  bcs @put
+  tya                ; partial
+  cpx CoopTmp+1
+  beq @put
+  lda #$8c           ; empty
+@put:
+  sta $6000+COOP_HUD_BUF+1,x
+  inx
+  cpx #$08
+  bne @bar
 @stage:
   jsr $c43e          ; DisableNMI
   ldx $0b            ; NametableBufferWriteOffset
@@ -695,30 +821,9 @@ CoopP2Hud:
   and #$1f
   sta $0b
   jmp $c436          ; EnableNMI
-;;; Three decimal digits of A at $6000+X..X+2 (digit tiles are $00..$09).
-@digits:
-  ldy #$00
--  cmp #100
-   bcc +
-   sbc #100
-   iny
-  bne -
-+ pha
-  tya
-  sta $6000,x
-  pla
-  ldy #$00
--  cmp #10
-   bcc +
-   sbc #10
-   iny
-  bne -
-+ pha
-  tya
-  sta $6001,x
-  pla
-  sta $6002,x
-  rts
+;;; Player 1's bar tiles for 0..3 quarters of a tile.
+CoopHudPartial:
+  .byte $8c,$8b,$8a,$89
 .endif ; _UPDATE_HUD
 
 .reloc
@@ -768,7 +873,7 @@ CoopUpdateP2:
   lda P2Down
   beq +
    jmp CoopP2DownFrame
-+
++ jsr CoopSettleP2
   ;; Select on pad 2: back next to player 1.
   lda P2Pressed
   and #$20
@@ -1159,61 +1264,58 @@ CoopClampP2:
   jmp CoopPlaceP2
 + rts
 
-;;; Places player 2 one tile beside player 1 on walkable ground: left,
-;;; right, below, above, else on top of player 1.
+;;; Places player 2 beside player 1 on walkable ground: one tile left,
+;;; right, below or above; then the diagonals; then two tiles away; else
+;;; on top of player 1.  Each candidate must be on screen, and the
+;;; hero's own terrain check must find no pit, wall, slide or pain there.
+COOP_PLACE_COUNT = 12
 CoopPlaceOffX:
-  .byte $f0,$10,$00,$00   ; -16, +16, 0, 0
-CoopPlaceOffXHi:
-  .byte $ff,$00,$00,$00
+  .byte $f0,$10,$00,$00, $f0,$10,$f0,$10, $e0,$20,$00,$00
 CoopPlaceOffY:
-  .byte $00,$00,$10,$f0   ; 0, 0, +16, -16
+  .byte $00,$00,$10,$f0, $10,$10,$f0,$f0, $00,$00,$20,$e0
 CoopPlaceP2:
   lda #$00
   sta CoopTmp           ; candidate index
 @next:
   ldy CoopTmp
-  lda $70
+  ;; X: player 1's X plus a signed offset.
+  lda CoopPlaceOffX,y
+  sta CoopTmp+1
   clc
-  adc CoopPlaceOffX,y
+  adc $70
   sta CoopPB
-  lda $90
-  adc CoopPlaceOffXHi,y
+  lda #$00
+  bit CoopTmp+1
+  bpl +
+   lda #$ff
++ adc $90
   sta CoopPB+1
+  ;; Y: player 1's Y plus a signed offset, wrapping at 240 per screen.
   lda $d0
   sta CoopPB+3
   lda CoopPlaceOffY,y
-  beq @y0
   bmi @yUp
-   lda $b0
    clc
-   adc #$10
+   adc $b0
+   bcs +                ; past 255: certainly past 240
    cmp #240
    bcc @yStore
-   sbc #240             ; carry is set here
++  sec
+   sbc #240
    inc CoopPB+3
-   bcs @yStore          ; (always)
-@yUp:
-   lda $b0
-   sec
-   sbc #$10
-   bcs @yStore
-   adc #240             ; carry is clear here
-   dec CoopPB+3
    jmp @yStore
-@y0:
-  lda $b0
+@yUp:
+  clc
+  adc $b0               ; $b0 - |offset|: carry set if no borrow
+  bcs @yStore
+   sec
+   sbc #16              ; (A + 256) - 16 = A + 240
+   dec CoopPB+3
 @yStore:
   sta CoopPB+2
   jsr CoopPBOnScreen
   bcc @reject
-  ;; Terrain at the candidate, via the hero's own check.
-  ldx #$03
--  lda CoopPB,x
-   sta $34,x
-   dex
-  bpl -
-  jsr CoopCheckTerrain
-  lda $20
+  jsr CoopTerrainAtPB
   and #$a3              ; pit, impassable on foot, slide, pain
   bne @reject
   ldx #$03
@@ -1225,7 +1327,7 @@ CoopPlaceP2:
 @reject:
   inc CoopTmp
   lda CoopTmp
-  cmp #$04
+  cmp #COOP_PLACE_COUNT
   bne @next
   ;; Nowhere free: on top of player 1.
   jsr CoopSetPAToP1
@@ -1235,6 +1337,37 @@ CoopPlaceP2:
    dex
   bpl -
   jmp CoopSyncP2Sprite
+
+;;; Terrain bits at CoopPB in A (see CoopCheckTerrain), via the hero's
+;;; own check.
+CoopTerrainAtPB:
+  ldx #$03
+-  lda CoopPB,x
+   sta $34,x
+   dex
+  bpl -
+  jsr CoopCheckTerrain
+  lda $20
+  rts
+
+;;; For a second after (re)spawning, check the ground under player 2 each
+;;; frame and place them again if it is a wall or a pit.  Right after a
+;;; map change the first placement can see the wrong terrain (the testers
+;;; found player 2 inside the wall on entering some caves).
+CoopSettleP2:
+  lda P2PlaceTimer
+  beq +
+  dec P2PlaceTimer
+  ldx #$03
+-  lda P2Ground,x
+   sta CoopPB,x
+   dex
+  bpl -
+  jsr CoopTerrainAtPB
+  and #$03              ; only walls and pits (ice floors slide)
+  beq +
+   jmp CoopPlaceP2
++ rts
 
 ;;; Copies player 2's ground position to their sprite slot.
 CoopSyncP2Sprite:
@@ -1495,8 +1628,11 @@ CoopP2Collisions:
   ldy CoopTarget
   lda $04a0,y
   and #$7f
-  cmp #$7b           ; a coin: leave it for player 1
-  beq @sword
+  cmp #$7b           ; a coin: into the shared money, as for player 1
+  bne +
+   COOP_FAR $946d    ; PlayerHitCoin_GetMoney (Y = coin): add, remove, sound
+   jmp @sword
++
   ;; Status projectiles ($0540 = $ff with a status in $0560) deal no
   ;; damage in vanilla, only a status.  Vanilla's handler would show the
   ;; status message (GameMode $10) and, for curse, recompute player 1's

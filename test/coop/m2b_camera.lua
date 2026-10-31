@@ -1,5 +1,5 @@
 -- M2b co-op test: midpoint camera, leash, Select teleport, hiding player 2
--- during set pieces.  Build with --flags="Dn Vmsw Cp"; run like
+-- during set pieces.  Build with --flags="Dn Ec Et Vemsw Cp"; run like
 -- m1_input.lua (see its header for the MesenCE / Mesen 0.9.9 commands).
 --
 -- Result is the exit code:

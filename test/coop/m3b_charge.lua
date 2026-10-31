@@ -1,6 +1,6 @@
 -- M3b co-op test: charge shots for player 2 (slots 8..$b; player 1 keeps 4..7)
 -- without drawing over player 1's charge meter; the shots hurt enemies.
--- Build with --flags="Dn Vmsw Cp"; run like m1_input.lua (see
+-- Build with --flags="Dn Ec Et Vemsw Cp"; run like m1_input.lua (see
 -- its header for the MesenCE / Mesen 0.9.9 commands).
 --
 -- Enemies are moved into place with RAM writes, done right after the co-op
