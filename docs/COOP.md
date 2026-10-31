@@ -83,8 +83,9 @@ Player 1 plays as in the original. Player 2, on controller 2:
   only over when player 1 runs out of HP.
 - Player 2 hides while player 1 rides the dolphin, flies, or is changed
   into another form, and reappears next to player 1 afterwards.
-- Player 2 uses player 1's sword, armor and level. They can't pick up items
-  or coins, talk to people or take exits.
+- Player 2 uses player 1's sword, armor and level. Coins either player
+  picks up go into the shared money. Player 2 can't pick up items, talk to
+  people or take exits.
 
 ## Playing online (netplay)
 

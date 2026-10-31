@@ -1592,8 +1592,11 @@ CoopP2Collisions:
   ldy CoopTarget
   lda $04a0,y
   and #$7f
-  cmp #$7b           ; a coin: leave it for player 1
-  beq @sword
+  cmp #$7b           ; a coin: into the shared money, as for player 1
+  bne +
+   COOP_FAR $946d    ; PlayerHitCoin_GetMoney (Y = coin): add, remove, sound
+   jmp @sword
++
   ;; Status projectiles ($0540 = $ff with a status in $0560) deal no
   ;; damage in vanilla, only a status.  Vanilla's handler would show the
   ;; status message (GameMode $10) and, for curse, recompute player 1's
