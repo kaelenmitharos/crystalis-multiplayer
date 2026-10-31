@@ -249,6 +249,39 @@ CoopShopEnter:
 .org $d9c1           ; MainGameModeJump_24_EmptyShop
   jsr CoopShopEnter
 
+;;; Original-game bug (v0.2 fix): a status hit while the hero is stone
+;;; (e.g. a poisonous enemy) replaces the stone status, and the code that
+;;; ends stone ($efdb) only clears the grey tint ($07e4 = $4d) while the
+;;; status is still stone, so the hero could move again but stayed grey.
+;;; Replaces the "lda $0710 / and #$0f / cmp #$02 / bne" at $efdb: when
+;;; the hero isn't stone but still has the tint, clear it the same way.
+;;; Returns Z set if stone (vanilla carries on), Z clear otherwise.  It
+;;; runs with bank $1a mapped at $8000 ($efbc maps it), so it may live in
+;;; $1a or the fixed bank.
+.pushseg "1a", "fe", "ff"
+.reloc
+CoopStoneCheck:
+  lda $0710          ; PlayerStatus
+  and #$0f
+  cmp #$02           ; STATUS_STONE
+  beq +
+  lda $07e4
+  cmp #$4d           ; the stone tint
+  bne ++
+   lda #$00
+   sta $07e4
+   jsr $8c0e         ; LoadPalettesForLocation, as at $eff6
+++ lda #$01
++ rts
+.popseg
+.org $efdb
+  jsr CoopStoneCheck
+  bne $f01d          ; CheckPassiveEffects
+  nop
+  nop
+  nop
+  nop
+
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
 ;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
 ;;; back through CoopFarA; the carry comes back.  The extra call level
@@ -347,6 +380,8 @@ CoopHpGuard:
   jsr CoopChargeGuard
 .popseg
 
+;;; These two only run from bank $1a code, so they may live in $1a too.
+.pushseg "1a", "fe", "ff"
 .reloc
 CoopChargeGuard:
   lda CoopP2Running
@@ -379,6 +414,7 @@ CoopFindSlot:
 + sta $10
 @go:
   jmp $98b9 ; FindEmptySpawnSlot
+.popseg
 
 .pushseg "3a" ; COOP_BANK
 

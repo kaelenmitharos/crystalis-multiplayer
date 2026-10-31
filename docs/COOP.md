@@ -54,7 +54,7 @@ Any BPS patcher works:
 
 The patched ROM must have this SHA-1:
 
-`63fb84bc25a803f3a7c3d86a9b8338b8af8c0213`
+`e47c708323c36a298ba6a600629ee0aeff130a9d`
 
 For netplay, both players need exactly this ROM. You can also check on the
 title screen: it says **RANDOMIZER COOP**, and after pressing Start the
@@ -202,6 +202,9 @@ host's public IP address.
 - Player 2's HP is a life bar instead of numbers.
 - Player 2 is hidden in shops and inns.
 - Player 2 picks up coins into the shared money.
+- A fix for a bug in the original game: if a poisonous enemy hit the hero
+  while they were turned to stone, they stayed grey after they could move
+  again. The grey now goes as soon as the stone does.
 - A step-by-step netplay quick start.
 
 ## For developers: building the patch
