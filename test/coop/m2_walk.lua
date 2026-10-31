@@ -1,6 +1,6 @@
 -- M2a co-op test: player 2 spawns, walks with pad 2, stops at walls,
 -- despawns on leave and respawns next to player 1 after a map change.
--- Build the ROM with --flags="Dn Vmsw Cp".  Run it like m1_input.lua (see
+-- Build the ROM with --flags="Dn Ec Et Vemsw Cp".  Run it like m1_input.lua (see
 -- that file's header for the MesenCE / Mesen 0.9.9 command lines).
 --
 -- Result is the exit code:

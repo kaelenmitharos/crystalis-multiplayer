@@ -1,6 +1,6 @@
 -- M3a co-op test: player 2's sword hurts enemies, enemies hurt player 2
 -- (P2HP, not PlayerHP), player 2 goes down at 0 HP and revives next to
--- player 1.  Build with --flags="Dn Vmsw Cp"; run like m1_input.lua (see
+-- player 1.  Build with --flags="Dn Ec Et Vemsw Cp"; run like m1_input.lua (see
 -- its header for the MesenCE / Mesen 0.9.9 commands).
 --
 -- Enemies are moved into place with RAM writes, done right after the co-op

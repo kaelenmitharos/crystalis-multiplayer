@@ -3,8 +3,8 @@
 -- 1. Regression: a scripted pad-1 run (no player 2) on the co-op-off ROM
 --    and on the co-op ROM must give the same RAM, apart from co-op RAM
 --    ($6280..$62db).  Run this script on the co-op-off build first
---    (--flags="Dn Vmsw"): it writes m4_regress_off.log.  Then run it on
---    the co-op build (--flags="Dn Vmsw Cp"): it writes m4_regress_coop.log
+--    (--flags="Dn Ec Et Vemsw"): it writes m4_regress_off.log.  Then run it on
+--    the co-op build (--flags="Dn Ec Et Vemsw Cp"): it writes m4_regress_coop.log
 --    and compares the two.
 -- 2. Determinism (co-op ROM only): from a save state, play the same
 --    two-player script twice (both heroes moving and swinging near
