@@ -1,4 +1,4 @@
-# Crystalis two-player co-op (v0.1)
+# Crystalis two-player co-op (v0.2)
 
 This is a patch for the NES game Crystalis that adds a second player. Player
 2 joins with controller 2 as a second hero: they walk, fight with the sword
@@ -24,7 +24,7 @@ The patch contains no game data. You need your own copy of the game.
 
   `fd0dcde4f1708b30d5c3de1e463f1dde89c5cb64`
 
-- The patch: `crystalis-coop-v0.1.bps`
+- The patch: `crystalis-coop-v0.2.bps`
 - A patcher, or RetroArch's soft-patching (below).
 
 ## Check your ROM
@@ -54,11 +54,11 @@ Any BPS patcher works:
 
 The patched ROM must have this SHA-1:
 
-`8f28b1c79af121134156fda36f76372cbe5b1aa2`
+`63fb84bc25a803f3a7c3d86a9b8338b8af8c0213`
 
 For netplay, both players need exactly this ROM. You can also check on the
 title screen: it says **RANDOMIZER COOP**, and after pressing Start the
-top box shows **VERSION COOP 0.1**.
+top box shows **VERSION COOP 0.2**.
 
 ## Controls
 
@@ -174,23 +174,42 @@ host's public IP address.
   host's game state. If it keeps happening, both restart RetroArch and
   reconnect.
 
-## Known limitations (v0.1)
+## Known limitations (v0.2)
 
 - Status effects: player 2 can be poisoned, paralyzed and cursed, but not
   turned to stone or drained of MP, and there is no way to cure them
   except being knocked down and revived (or a new map after a revive).
 - Enemies only chase player 1.
+- Player 2 can't pick up items, talk to people or take exits; only player
+  1 drives the story.
+- Player 2 has no shadow and the same colours as player 1.
+- Player 2's first Start press can be ignored during a screen change;
+  press it again.
 - Busy rooms with many enemies slow down more than in the original while
   both players move.
-- Player 2's HP is only shown with the randomizer's updated status bar
+- Player 2's HP bar is only shown with the randomizer's updated status bar
   (the default).
+- Netplay has only been tested between two PCs once, and on one PC with
+  scripted input.
+
+### Changes in v0.2
+
+- The original game: no shuffled monsters or mimics, so every item is in
+  its original chest (v0.1 had moved the Ball of Wind to Goa Fortress), and
+  no joke item names.
+- Player 2 no longer appears inside walls when entering some caves.
+- A downed player 2 can no longer leave and rejoin to get back up.
+- Player 2's HP is a life bar instead of numbers.
+- Player 2 is hidden in shops and inns.
+- Player 2 picks up coins into the shared money.
+- A step-by-step netplay quick start.
 
 ## For developers: building the patch
 
 See `BUILD.md` for building. With your ROM in the repo root:
 
 ```
-scripts/coop-release.sh            # writes release/crystalis-coop-v0.1.{nes,bps}
+scripts/coop-release.sh            # writes release/crystalis-coop-v0.2.{nes,bps}
 ```
 
 The script checks the source SHA-1, builds twice and checks the builds are
@@ -206,5 +225,5 @@ without player 2 plays exactly like the co-op-off build. The same-PC
 netplay test needs RetroArch and Node.js:
 
 ```
-test\coop\netplay\run.ps1 -RetroArch C:\path\to\RetroArch-Win64 -Rom release\crystalis-coop-v0.1.nes -Core mesen -Minutes 15
+test\coop\netplay\run.ps1 -RetroArch C:\path\to\RetroArch-Win64 -Rom release\crystalis-coop-v0.2.nes -Core mesen -Minutes 15
 ```
