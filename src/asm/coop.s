@@ -77,7 +77,8 @@ P2HudTimer    = $62cc  ; counts down; redraw anyway when it wraps
 CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
 ;;; v0.2:
 P2PlaceTimer  = $62ce  ; frames left to re-check player 2's ground after a spawn
-;;; $62cf..$62db spare
+P2Rejoined    = $62cf  ; nonzero: player 2 pressed Start to join since the last spawn
+;;; $62d0..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -130,6 +131,7 @@ CoopReadControllers:
    eor #$01
    sta P2Active
    beq ++
+    sta P2Rejoined     ; (A = 1) a downed player 2 stays down on rejoin
     lda #COOP_SFX_JOIN
     jmp $c125 ; StartAudioTrack
 ++  lda #COOP_SFX_LEAVE ; CoopUpdateP2 despawns player 2 next
@@ -521,6 +523,18 @@ CoopSpawnP2:
   lda $03a0,x
   and #$0f
   sta $03a0,x
+  ;; Rejoining (leave, then Start again) while down on the same map:
+  ;; back where they fell, still down.
+  lda P2Rejoined
+  beq @fresh
+  lda P2Down
+  beq @fresh
+  lda $6c ; CurrentLocation
+  cmp P2Loc
+  bne @fresh
+   jsr CoopSyncP2Sprite
+   jmp @hp
+@fresh:
   ;; Player 2's ground state starts as a copy of slot 0.
   ldx #COOP_SLOT0_FIELDS-1
 -  lda CoopSlot0FieldsLo,x
@@ -537,10 +551,14 @@ CoopSpawnP2:
   jsr CoopPlaceP2  ; one tile beside player 1, on walkable ground
   lda #COOP_SETTLE_FRAMES
   sta P2PlaceTimer
-  ;; HP: full on first join; a new map (or the end of a set piece)
-  ;; revives a downed player 2.
+@hp:
+  ;; HP: full on first join, otherwise kept.  A new map (or the end of a
+  ;; set piece) revives a downed player 2, but leaving and joining again
+  ;; doesn't: they stay down until player 1 revives them.
   lda P2Down
   beq +
+   lda P2Rejoined
+   bne ++
    jsr CoopReviveP2
    jmp ++
 + lda P2HP
@@ -548,7 +566,9 @@ CoopSpawnP2:
    lda $03c0       ; PlayerMaxHP
    sta P2MaxHP
    sta P2HP
-++ sec
+++ lda #$00
+  sta P2Rejoined
+  sec
   rts
 
 ;;; Swaps slot 0's fields with P2Ground, and slot 1's fields with player
