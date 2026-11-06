@@ -779,7 +779,7 @@ const storyMode = (rom: Rom) => {
 };
 
 // Version of the two-player co-op patch (flag Cp), shown on the title screen.
-export const COOP_VERSION = '0.2';
+export const COOP_VERSION = '0.3';
 
 // Stamp the ROM
 export function stampVersionSeedAndHash(rom: Uint8Array,

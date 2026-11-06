@@ -78,7 +78,10 @@ CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
 ;;; v0.2:
 P2PlaceTimer  = $62ce  ; frames left to re-check player 2's ground after a spawn
 P2Rejoined    = $62cf  ; nonzero: player 2 pressed Start to join since the last spawn
-;;; $62d0..$62db spare
+;;; v0.3:
+CoopHudLo     = $62d0  ; 2 bytes: product/remainder for player 2's bar
+CoopHudHi     = $62d1
+;;; $62d2..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -689,17 +692,18 @@ COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
 ;;; ----------------------------------------------------------------
-;;; Player 2's HP readout (M3b; a bar since v0.2): "2" and a life bar in
-;;; the status bar, 8 tiles of 32 HP each (player 1's are 16 HP).  The
-;;; v0.1 digits "2 Lf HHH/MMM" ran into the enemy HP and MP digits on
-;;; either side, and the testers wanted a bar like player 1's.
+;;; Player 2's HP readout (M3b; a bar since v0.2, framed since v0.3): "2"
+;;; and a life bar in player 1's style ("Lf", the bar, the end cap) on the
+;;; status bar's bottom row.  The bar is max HP / 32 tiles long (at most 7)
+;;; and filled in proportion to HP.  The v0.1 digits "2 Lf HHH/MMM" ran
+;;; into the enemy HP and MP digits on either side.
 ;;;
 ;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
 ;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
 ;;; row $2b40 is Pw, the charge arrows and the ball indicators, then Dl and
 ;;; Ex; row $2b60 has the enemy HP readout at $2b62..$2b6a (_ENEMY_HP),
 ;;; blanks to $2b75, then Mp.  The enemy name goes on the border row $2b82.
-;;; So player 2's readout uses row 3, $2b6c..$2b74, with the randomizer's
+;;; So player 2's readout uses row 3, $2b6c..$2b75, with the randomizer's
 ;;; HUD layout (_UPDATE_HUD; with the vanilla HUD (Vh) it is not shown).
 ;;;
 ;;; Tiles are staged at $6071..$6079 and queued like UpdateHPDisplayInternal
@@ -707,10 +711,11 @@ COOP_LEASH_Y = 128
 ;;; scrolling (from $6000), player 1's bar and the charge meter
 ;;; ($6060..$6070), the status numbers (from $607b), map rows ($6080..) and
 ;;; the enemy readouts ($60a0, $60b0); $60c0.. is used by Draygon 2.
-;;; Redrawn only when P2HP or P2MaxHP change, plus every 256 frames in
-;;; case a full status bar redraw (menus, map loads) wiped it.
+;;; Redrawn when P2HP or P2MaxHP change, after a full status bar redraw
+;;; (menus, map loads: hud.s clears P2HudState), and every 256 frames.
 .ifdef _UPDATE_HUD
-COOP_HUD_BUF = $71         ; staging offset: $6071..$6079
+COOP_HUD_BUF = $71         ; staging offset: $6071..$607a
+COOP_HUD_TILES = 7         ; bar tiles; with "2", "Lf" and the cap: 10 tiles
 COOP_HUD_PPU_HI = $2b      ; PPU $2b6c
 COOP_HUD_PPU_LO = $6c
 
@@ -726,7 +731,7 @@ CoopP2Hud:
   lda #COOP_HUD_BUF
   jsr $c72b          ; WaitForNametableBufferAvailable
   lda #$20           ; blank tile
-  ldx #$08
+  ldx #COOP_HUD_TILES+2
 -  sta $6000+COOP_HUD_BUF,x
    dex
   bpl -
@@ -752,57 +757,92 @@ CoopP2Hud:
   sta P2HudMax
   lda #COOP_HUD_BUF
   jsr $c72b          ; WaitForNametableBufferAvailable
+  ;; "2", then a bar like player 1's: "Lf" (which draws the frame's left
+  ;; edge), W tiles and the end cap $8d.  W = max HP / 32 rounded up, at
+  ;; most 7; the fill is HP / max HP of the bar in quarter tiles (at least
+  ;; a sliver while HP is left).
   lda #$02           ; "2"
   sta $6000+COOP_HUD_BUF
-  ;; A life bar like player 1's, but 32 HP per tile so 255 fits in 8:
-  ;; CoopTmp = tiles (max HP / 32, rounded up), CoopTmp+1 = full tiles
-  ;; (HP / 32), Y = the tile after them (HP % 32 in quarters).
+  lda #$80           ; "Lf"
+  sta $6000+COOP_HUD_BUF+1
   lda P2MaxHP
+  clc
+  adc #31
+  ror                ; (max + 31) / 2, keeping the carry out of the add
   lsr
   lsr
   lsr
-  lsr
-  lsr
-  sta CoopTmp
+  lsr                ; ceil(max / 32), 0..8
+  cmp #COOP_HUD_TILES+1
+  bcc +
+   lda #COOP_HUD_TILES
++ sta CoopTmp        ; W
+  ;; quarters = HP * 4W / max (16-bit product, 8-bit divisor).
+  asl
+  asl
+  sta CoopTmp+1      ; 4W
+  lda #$00
+  sta CoopHudLo
+  sta CoopHudHi
+  ldx CoopTmp+1
+  beq @divide
+-  lda CoopHudLo
+   clc
+   adc P2HP
+   sta CoopHudLo
+   bcc +
+    inc CoopHudHi
++  dex
+  bne -
+@divide:
+  ldx #$00           ; quotient
   lda P2MaxHP
-  and #$1f
-  beq +
-   inc CoopTmp
-+ lda P2HP
-  lsr
-  lsr
-  lsr
-  lsr
-  lsr
-  sta CoopTmp+1
-  lda P2HP
-  and #$1f
-  lsr
-  lsr
-  lsr
-  tax
-  bne +
-  lda P2HP           ; a little HP left: still show a sliver
-  and #$1f
-  beq +
+  beq @fill
+-  lda CoopHudLo
+   sec
+   sbc P2MaxHP
+   tay
+   lda CoopHudHi
+   sbc #$00
+   bcc @fill
+   sta CoopHudHi
+   sty CoopHudLo
    inx
-+ ldy CoopHudPartial,x
+  bne -
+@fill:
+  txa
+  bne +
+  lda P2HP           ; a little HP left: show a sliver
+  beq +
+   lda #$01
++ sta CoopTmp+1      ; filled quarters
+  ;; Tiles: full ($88) while 4+ quarters are left, then the partial tile
+  ;; for 0..3 quarters ($8c empty .. $89), then the cap, then blanks.
   ldx #$00
 @bar:
-  lda #$88           ; full
-  cpx CoopTmp+1
-  bcc @put
-  lda #$20           ; past the end of the bar: blank
   cpx CoopTmp
-  bcs @put
-  tya                ; partial
-  cpx CoopTmp+1
-  beq @put
-  lda #$8c           ; empty
+  bcs @after
+  lda CoopTmp+1
+  cmp #$04
+  bcc +
+   sbc #$04
+   sta CoopTmp+1
+   lda #$88
+   bne @put
++ tay
+  lda CoopHudPartial,y
+  ldy #$00
+  sty CoopTmp+1
+  jmp @put
+@after:
+  bne +
+   lda #$8d          ; end cap, right after the last tile
+   bne @put
++ lda #$20
 @put:
-  sta $6000+COOP_HUD_BUF+1,x
+  sta $6000+COOP_HUD_BUF+2,x
   inx
-  cpx #$08
+  cpx #COOP_HUD_TILES+1
   bne @bar
 @stage:
   jsr $c43e          ; DisableNMI
@@ -811,7 +851,7 @@ CoopP2Hud:
   sta $6200,x
   lda #COOP_HUD_PPU_LO
   sta $6201,x
-  lda #$09
+  lda #COOP_HUD_TILES+3
   sta $6202,x
   lda #COOP_HUD_BUF
   sta $6203,x
