@@ -285,6 +285,33 @@ CoopStoneCheck:
   nop
   nop
 
+;;; Boss reward chests (v0.3): ObjectActionJump_6c ($b728, bank $0f) waits
+;;; until slots $0d..$1e hold nothing but chests/triggers ($78), $70,
+;;; $7f, people ($30), $39 or empty slots before it spawns the chest.
+;;; Player 2's sprite ($09) and sword ($10) live in those slots, so the
+;;; Rabbit Boots after Vampire 1 only appeared once player 2 left.  Its
+;;; last test ("cmp #$00 / bne bail") now comes here: player 2's slots
+;;; count as empty.  A = the slot's action, Y = the slot.
+.pushseg "0f", "fe", "ff"
+.reloc
+CoopChestCheck:
+  cmp #$00
+  beq +
+  cpy P2Slot
+  beq +
+  cpy P2SwordSlot
+  beq +
+   pla               ; something else is still there: bail, as vanilla
+   pla
+   jmp $b7bb
++ rts
+.popseg
+.pushseg "0f"
+.org $b75d
+  jsr CoopChestCheck
+  nop
+.popseg
+
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
 ;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
 ;;; back through CoopFarA; the carry comes back.  The extra call level
