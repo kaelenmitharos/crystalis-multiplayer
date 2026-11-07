@@ -85,11 +85,15 @@ CoopHudHi     = $62d1
 CoopP1HPLast  = $62d2  ; player 1's HP and max HP at the last co-op update
 CoopP1MaxLast = $62d3
 CoopHerbFlag  = $62d4  ; nonzero: a Medical Herb healed player 1 (not shared)
-;;; $62d5..$62db spare
+;;; v0.3 player 1 down:
+P1Down        = $62d5  ; nonzero: player 1 is down (0 HP) while player 2 plays on
+P1DownTimer   = $62d6  ; frames player 2 has stood next to them
+P1DownLoc     = $62d7  ; CurrentLocation when player 1 went down
+;;; $62d8..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
-COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE
+COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE (= COOP_SFX_JOIN - 1, see below)
 
 .segment "fe", "ff"
 
@@ -104,8 +108,19 @@ COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE
 ;;; Called once per frame in game mode 8 (normal play), in place of the
 ;;; usual controller read.  The hook is the tail of CheckFlag0 in flags.s
 ;;; (or $cb62 directly when _CHECK_FLAG0 is off).
+;;; (The work is in bank $3a since v0.3: the fixed bank is full.  Nothing
+;;; that runs between here and the main loop's next bank switch depends on
+;;; what is mapped at $8000: the status display routines save and restore
+;;; the banks, and the start menu switches its own.)
 .reloc
 CoopReadControllers:
+  lda #COOP_BANK
+  jsr BankSwitch8k_8000
+  jmp CoopReadControllersFar
+
+.pushseg "3a"
+.reloc
+CoopReadControllersFar:
 .ifdef _CTRL1_SHORTCUTS
   jsr ReadControllersWithButtonUp
 .else
@@ -136,14 +151,14 @@ CoopReadControllers:
   beq +
    lda P2Active
    eor #$01
-   sta P2Active
+   sta P2Active      ; (CoopUpdateP2 despawns player 2 after a leave)
    beq ++
     sta P2Rejoined     ; (A = 1) a downed player 2 stays down on rejoin
-    lda #COOP_SFX_JOIN
-    jmp $c125 ; StartAudioTrack
-++  lda #COOP_SFX_LEAVE ; CoopUpdateP2 despawns player 2 next
-    jmp $c125 ; StartAudioTrack
+++ clc
+   adc #COOP_SFX_LEAVE ; A = 1 join, 0 leave: the join sound is leave + 1
+   jmp $c125 ; StartAudioTrack
 + rts
+.popseg
 
 .ifndef _CHECK_FLAG0
 .ifndef _CTRL1_SHORTCUTS
@@ -954,6 +969,8 @@ CoopUpdateP2:
 .ifdef _UPDATE_HUD
   jsr CoopP2Hud
 .endif
+  jsr CoopP1DownCheck
+  jsr CoopP1DownFrame
   jsr CoopShareHeals
   ;; Player 2 left: remove their object.
   lda P2Active
@@ -1731,6 +1748,116 @@ CoopP2DownFrame:
    sta $d0,x
 + rts
 
+;;; Player 1 down (v0.3).  When player 1's HP reaches 0 while player 2 is
+;;; joined, on screen and up, player 1 goes down instead of the game being
+;;; over: they keep 1 HP (so the game's own death check, CheckForPlayerDeath
+;;; at $cb84, never fires: no fixed-bank code needed), are frozen with the
+;;; delay stone uses ($05a0) and invincible (so they blink), and lose any
+;;; status (so poison can't take the last HP).  Called right after HP can
+;;; drop: from player 2's update (after the poison tick) and at the start
+;;; of player 2's collision pass (right after the game's collisions).
+CoopP1DownCheck:
+  lda $03c1          ; PlayerHP
+  bne @rts
+  lda P1Down
+  bne @rts
+  lda P2Active
+  beq @rts
+  lda P2Down
+  bne @rts
+  lda P2Slot         ; hidden in a set piece: no one to revive them
+  beq @rts
+  lda #$01
+  sta P1Down
+  sta $03c1          ; 1 HP while down
+  sta CoopP1HPLast   ; (not a heal to share)
+  lda #$00
+  sta P1DownTimer
+  lda $0710          ; no status effects while down
+  and #$f0
+  sta $0710
+  lda $6c            ; CurrentLocation
+  sta P1DownLoc
+  jsr CoopP1Freeze
+  COOP_FAR $8cc0     ; UpdateHPDisplayInternal
+@rts:
+  rts
+
+CoopP1Freeze:
+  lda #$ff
+  sta $05a0          ; ObjectDelay of slot 0: frozen, as stone does
+  lda #$10
+  sta $071a          ; invincible (blinking)
+  rts
+
+;;; Each frame while player 1 is down.  Player 2 standing within a tile for
+;;; a second revives them, as player 1 does for player 2; so does a map
+;;; change.  Player 1 comes back with a quarter of their max HP.  If player
+;;; 2 goes down or leaves, player 1's HP goes to 0 and the game's own death
+;;; check ends the game next frame.  (A Medical Herb player 1 uses on
+;;; themself from the menu also ends it.)
+CoopP1DownFrame:
+  lda P1Down
+  beq @rts
+  lda P2Active
+  beq @over
+  lda P2Down
+  bne @over
+  lda $03c1
+  cmp #$02
+  bcs @healed        ; healed some other way
+  lda $6c
+  cmp P1DownLoc
+  bne @revive
+  jsr CoopP1Freeze
+  jsr CoopSetPAToP1
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  lda CoopDX+1
+  ora CoopDY+1
+  bne @far
+  lda CoopDX
+  cmp #20
+  bcs @far
+  lda CoopDY
+  cmp #20
+  bcs @far
+  inc P1DownTimer
+  lda P1DownTimer
+  cmp #COOP_REVIVE_FRAMES
+  bcs @revive
+@rts:
+  rts
+@far:
+  lda #$00
+  sta P1DownTimer
+  rts
+@over:
+  lda #$00
+  sta P1Down
+  sta $03c1          ; game over at the next death check
+  sta CoopP1HPLast
+  sta $05a0
+  rts
+@revive:
+  lda $03c0          ; PlayerMaxHP
+  lsr
+  lsr
+  bne +
+   lda #$01
++ sta $03c1
+  lda #$3c           ; a second of invincibility
+  sta $071a
+  COOP_FAR $8cc0     ; UpdateHPDisplayInternal
+@healed:
+  lda #$00
+  sta P1Down
+  sta P1DownTimer
+  sta $05a0          ; unfreeze
+  lda $03c1          ; not a heal to share with player 2
+  sta CoopP1HPLast
+  rts
+
 ;;; Back on their feet with a quarter of their max HP.
 CoopReviveP2:
   lda #$00
@@ -1778,6 +1905,7 @@ CoopGetSwordSlot:
 ;;; Player 2's collision pass, called after the vanilla one.
 .reloc
 CoopP2Collisions:
+  jsr CoopP1DownCheck  ; right after the game's collisions
   lda P2Down
   bne @exit
   lda $41            ; normal play only
