@@ -81,7 +81,11 @@ P2Rejoined    = $62cf  ; nonzero: player 2 pressed Start to join since the last 
 ;;; v0.3:
 CoopHudLo     = $62d0  ; 2 bytes: product/remainder for player 2's bar
 CoopHudHi     = $62d1
-;;; $62d2..$62db spare
+;;; v0.3 shared heals:
+CoopP1HPLast  = $62d2  ; player 1's HP and max HP at the last co-op update
+CoopP1MaxLast = $62d3
+CoopHerbFlag  = $62d4  ; nonzero: a Medical Herb healed player 1 (not shared)
+;;; $62d5..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
@@ -292,7 +296,7 @@ CoopStoneCheck:
 ;;; Rabbit Boots after Vampire 1 only appeared once player 2 left.  Its
 ;;; last test ("cmp #$00 / bne bail") now comes here: player 2's slots
 ;;; count as empty.  A = the slot's action, Y = the slot.
-.pushseg "0f", "fe", "ff"
+.pushseg "0f"
 .reloc
 CoopChestCheck:
   cmp #$00
@@ -310,6 +314,50 @@ CoopChestCheck:
 .org $b75d
   jsr CoopChestCheck
   nop
+.popseg
+
+;;; Medical Herb (v0.3): ItemUseJump_MedicalHerb ($84e0, bank $0e) does
+;;; "lda #amount / adc PlayerHP / (clamp) / sta PlayerHP".  The adc comes
+;;; here: if player 1 is already full and player 2 (joined, not down) is
+;;; not, the herb heals player 2 instead and player 1's HP is left as it
+;;; is; otherwise it heals player 1 as usual and CoopHerbFlag keeps that
+;;; heal from being shared (CoopShareHeals).  A = amount, carry clear.
+.pushseg "0e"
+.reloc
+CoopHerbAdd:
+  pha
+  lda $03c1          ; PlayerHP
+  cmp $03c0          ; PlayerMaxHP
+  bcc @p1
+  lda P2Active
+  beq @p1
+  lda P2Down
+  bne @p1
+  lda P2HP
+  cmp P2MaxHP
+  bcs @p1
+  pla
+  clc
+  adc P2HP
+  bcs +
+  cmp P2MaxHP
+  bcc ++
++ lda P2MaxHP
+++ sta P2HP
+  lda $03c1          ; player 1 stays as is
+  clc
+  rts
+@p1:
+  lda #$01
+  sta CoopHerbFlag
+  pla
+  clc
+  adc $03c1
+  rts
+.popseg
+.pushseg "0e"
+.org $84eb
+  jsr CoopHerbAdd
 .popseg
 
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
@@ -370,7 +418,7 @@ CoopCamera:
 ;;; HUD guard (M3): UpdateHPDisplayInternal ($8cc0, bank $1a) draws
 ;;; PlayerHP into the status bar.  While player 2's hit is handled,
 ;;; PlayerHP holds P2HP, so skip the redraw (CoopNoHud).
-;;; (The guard itself is in the fixed bank: bank $1a has no free space.)
+;;; (The guard is in the fixed bank: bank $1a has no free space.)
 .pushseg "1a"
 .org $8cc2 ; after txa/pha; was lda #$60 / jsr WaitForNametableBufferAvailable
   jsr CoopHpGuard
@@ -504,10 +552,18 @@ CoopFindSlot:
 ;;; Runs the hero actions with player 2 swapped into slots 0 and 1.
 .reloc
 CoopRunP2Actions:
+  ;; ObjectActionJump_01 uses EquippedConsumableItem when B is newly
+  ;; pressed: player 2's swing must not use up player 1's item (v0.3).
+  lda $0715          ; EquippedConsumableItem
+  pha
+  lda #$00
+  sta $0715
   ldx #$00
   COOP_FAR $9d9a ; ObjectActionJump_03
   ldx #$01
   COOP_FAR $9b45 ; ObjectActionJump_01
+  pla
+  sta $0715
   rts
 
 ;;; Terrain under the point $34..$37, for placing player 2 (M2b), using
@@ -898,6 +954,7 @@ CoopUpdateP2:
 .ifdef _UPDATE_HUD
   jsr CoopP2Hud
 .endif
+  jsr CoopShareHeals
   ;; Player 2 left: remove their object.
   lda P2Active
   bne +
@@ -1565,6 +1622,74 @@ CoopP2Vitals:
 + lda $0380,x
   and #$fb
   sta $0380,x
+  rts
+
+;;; Heals reach player 2 too (v0.3).  Each frame of normal play, compare
+;;; player 1's HP and max HP with the last co-op update:
+;;;  - max HP went up (level up): player 2 gets the same increase in max
+;;;    HP (CoopP2Vitals copies it) and the same HP, as player 1 does;
+;;;  - HP went up by 1 (Refresh adds 1 HP a frame) or by a partial amount:
+;;;    player 2 is healed by the same amount;
+;;;  - HP went up to full (inns, shrines, healers): player 2 is filled up
+;;;    too (a downed player 2 was already revived by the inn's map reload);
+;;;  - a Medical Herb only heals player 1 (CoopHerbAdd heals player 2
+;;;    instead when player 1 is full), so it sets CoopHerbFlag.
+;;; A downed player 2 is skipped: they still need reviving.  The co-op
+;;; update only runs while player 2 is around, so a (re)join resyncs.
+CoopShareHeals:
+  lda P2Rejoined
+  bne @sync
+  lda $03c0          ; PlayerMaxHP
+  sec
+  sbc CoopP1MaxLast
+  beq @noLevel
+  bcc @sync
+  ;; Level up: the same HP increase for player 2.
+  ldx P2Down
+  bne @sync
+  clc
+  adc P2HP
+  bcs +
+  cmp $03c0
+  bcc ++
++ lda $03c0
+++ sta P2HP
+  jmp @sync
+@noLevel:
+  lda $03c1          ; PlayerHP
+  sec
+  sbc CoopP1HPLast
+  beq @sync
+  bcc @sync          ; damage: nothing to share
+  ldx CoopHerbFlag
+  bne @sync
+  ldx P2Active
+  beq @sync
+  ldx P2Down
+  bne @sync
+  cmp #$01
+  beq @add           ; Refresh
+  ldx $03c1
+  cpx $03c0
+  bne @add           ; a partial heal
+  lda P2MaxHP        ; filled up: fill player 2 up too
+  sta P2HP
+  jmp @sync
+@add:
+  clc
+  adc P2HP
+  bcs +
+  cmp P2MaxHP
+  bcc ++
++ lda P2MaxHP
+++ sta P2HP
+@sync:
+  lda #$00
+  sta CoopHerbFlag
+  lda $03c0
+  sta CoopP1MaxLast
+  lda $03c1
+  sta CoopP1HPLast
   rts
 
 ;;; Player 2 is down: frozen where they fell, blinking, no collisions and
