@@ -1,4 +1,4 @@
-# Crystalis two-player co-op (v0.2)
+# Crystalis two-player co-op (v0.3)
 
 This is a patch for the NES game Crystalis that adds a second player. Player
 2 joins with controller 2 as a second hero: they walk, fight with the sword
@@ -24,7 +24,7 @@ The patch contains no game data. You need your own copy of the game.
 
   `fd0dcde4f1708b30d5c3de1e463f1dde89c5cb64`
 
-- The patch: `crystalis-coop-v0.2.bps`
+- The patch: `crystalis-coop-v0.3.bps`
 - A patcher, or RetroArch's soft-patching (below).
 
 ## Check your ROM
@@ -54,11 +54,11 @@ Any BPS patcher works:
 
 The patched ROM must have this SHA-1:
 
-`e47c708323c36a298ba6a600629ee0aeff130a9d`
+`8c20e5020edbe634a64a750db31f7a1930331403`
 
 For netplay, both players need exactly this ROM. You can also check on the
 title screen: it says **RANDOMIZER COOP**, and after pressing Start the
-top box shows **VERSION COOP 0.2**.
+top box shows **VERSION COOP 0.3**.
 
 ## Controls
 
@@ -74,13 +74,25 @@ Player 1 plays as in the original. Player 2, on controller 2:
 
 - The two heroes can't get further apart than about two thirds of the
   screen: the camera keeps both in view.
-- Player 2's HP is shown on the status bar's bottom row as `2` and a life
-  bar, next to the MP. Each tile of player 2's bar is 32 HP (player 1's
-  are 16), so it fits even at full health.
-- At 0 HP player 2 is down: they freeze where they fell and blink. Player 1
-  revives them by standing next to them for about a second, or by going to
-  another map. Player 2 comes back with a quarter of their HP. The game is
-  only over when player 1 runs out of HP.
+- Player 2's HP is shown on the status bar's bottom row, next to the MP,
+  as `2` and a life bar like player 1's. Each tile of player 2's bar is 32
+  HP (player 1's are 16), so it fits even at full health.
+- **Going down.** At 0 HP a hero is down: they freeze where they fell and
+  blink, and can't be hurt. The other hero revives them by standing next
+  to them for about a second; going to another map also revives them.
+  They come back with a quarter of their max HP and no status effects.
+  - Player 1 only goes down (instead of the game being over) while player
+    2 is joined and up. Player 1 shows 1 HP while down.
+  - **Game over** when both heroes are down, when player 2 leaves while
+    player 1 is down, or when player 1 runs out of HP with no player 2 —
+    exactly as in the original.
+  - Leaving and joining again doesn't revive player 2.
+- **Healing.** Refresh heals both heroes by the same amount, an inn or a
+  full heal (shrines, healers) fills both up and revives a downed player
+  2, and a level up raises both heroes' max HP and HP by the same amount.
+  A Medical Herb heals player 1; if player 1 is already full, it heals
+  player 2 instead (player 2 can't open the menu). A downed hero still
+  needs reviving: heals other than an inn skip them.
 - Player 2 hides while player 1 rides the dolphin, flies, or is changed
   into another form, and reappears next to player 1 afterwards.
 - Player 2 uses player 1's sword, armor and level. Coins either player
@@ -174,7 +186,7 @@ host's public IP address.
   host's game state. If it keeps happening, both restart RetroArch and
   reconnect.
 
-## Known limitations (v0.2)
+## Known limitations (v0.3)
 
 - Status effects: player 2 can be poisoned, paralyzed and cursed, but not
   turned to stone or drained of MP, and there is no way to cure them
@@ -185,12 +197,26 @@ host's public IP address.
 - Player 2 has no shadow and the same colours as player 1.
 - Player 2's first Start press can be ignored during a screen change;
   press it again.
+- A downed player 1 can still open the menu and use a Medical Herb on
+  themself, which gets them back up.
 - Busy rooms with many enemies slow down more than in the original while
   both players move.
 - Player 2's HP bar is only shown with the randomizer's updated status bar
   (the default).
 - Netplay has only been tested between two PCs once, and on one PC with
   scripted input.
+
+### Changes in v0.3
+
+- Player 1 goes down instead of the game being over while player 2 is up,
+  and player 2 revives them (see Controls).
+- Player 2's HP recovers: Refresh, inns, full heals, level ups, and the
+  Medical Herb rule above.
+- Player 2's life bar looks like player 1's (frame and end cap) and comes
+  back straight after a menu or map change.
+- Boss reward chests (such as the Rabbit Boots after Vampire 1) appear
+  while player 2 is joined.
+- Player 2's sword swing no longer uses up player 1's equipped item.
 
 ### Changes in v0.2
 
@@ -212,7 +238,7 @@ host's public IP address.
 See `BUILD.md` for building. With your ROM in the repo root:
 
 ```
-scripts/coop-release.sh            # writes release/crystalis-coop-v0.2.{nes,bps}
+scripts/coop-release.sh            # writes release/crystalis-coop-v0.3.{nes,bps}
 ```
 
 The script checks the source SHA-1, builds twice and checks the builds are
@@ -228,5 +254,5 @@ without player 2 plays exactly like the co-op-off build. The same-PC
 netplay test needs RetroArch and Node.js:
 
 ```
-test\coop\netplay\run.ps1 -RetroArch C:\path\to\RetroArch-Win64 -Rom release\crystalis-coop-v0.2.nes -Core mesen -Minutes 15
+test\coop\netplay\run.ps1 -RetroArch C:\path\to\RetroArch-Win64 -Rom release\crystalis-coop-v0.3.nes -Core mesen -Minutes 15
 ```

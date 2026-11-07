@@ -78,11 +78,22 @@ CoopP2Running = $62cd  ; nonzero while the hero code runs as player 2
 ;;; v0.2:
 P2PlaceTimer  = $62ce  ; frames left to re-check player 2's ground after a spawn
 P2Rejoined    = $62cf  ; nonzero: player 2 pressed Start to join since the last spawn
-;;; $62d0..$62db spare
+;;; v0.3:
+CoopHudLo     = $62d0  ; 2 bytes: product/remainder for player 2's bar
+CoopHudHi     = $62d1
+;;; v0.3 shared heals:
+CoopP1HPLast  = $62d2  ; player 1's HP and max HP at the last co-op update
+CoopP1MaxLast = $62d3
+CoopHerbFlag  = $62d4  ; nonzero: a Medical Herb healed player 1 (not shared)
+;;; v0.3 player 1 down:
+P1Down        = $62d5  ; nonzero: player 1 is down (0 HP) while player 2 plays on
+P1DownTimer   = $62d6  ; frames player 2 has stood next to them
+P1DownLoc     = $62d7  ; CurrentLocation when player 1 went down
+;;; $62d8..$62db spare
 
 ;;; Sound effects for join and leave (vanilla SFX ids).
 COOP_SFX_JOIN  = $4c   ; SFX_CURSOR_SELECT
-COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE
+COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE (= COOP_SFX_JOIN - 1, see below)
 
 .segment "fe", "ff"
 
@@ -97,6 +108,9 @@ COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE
 ;;; Called once per frame in game mode 8 (normal play), in place of the
 ;;; usual controller read.  The hook is the tail of CheckFlag0 in flags.s
 ;;; (or $cb62 directly when _CHECK_FLAG0 is off).
+;;; (Pad 2 is handled in bank $3a since v0.3: the fixed bank is full.  Pad
+;;; 1 is read first, with the banks as the game left them, and the bank at
+;;; $8000 is put back afterwards, so nothing else sees a difference.)
 .reloc
 CoopReadControllers:
 .ifdef _CTRL1_SHORTCUTS
@@ -104,6 +118,17 @@ CoopReadControllers:
 .else
   jsr ReadControllersWithDirections
 .endif
+  lda $6e            ; PrgPageShadowLo: the bank at $8000
+  pha
+  lda #COOP_BANK
+  jsr BankSwitch8k_8000
+  jsr CoopReadControllersFar
+  pla
+  jmp BankSwitch8k_8000
+
+.pushseg "3a"
+.reloc
+CoopReadControllersFar:
   ;; ReadControllerX uses $4f for its result and $49,x ($4a for x=1) as
   ;; scratch for the DPCM double read.  $4a holds pad 1 button-up state
   ;; under _CTRL1_SHORTCUTS, so save and restore both.
@@ -129,14 +154,14 @@ CoopReadControllers:
   beq +
    lda P2Active
    eor #$01
-   sta P2Active
+   sta P2Active      ; (CoopUpdateP2 despawns player 2 after a leave)
    beq ++
     sta P2Rejoined     ; (A = 1) a downed player 2 stays down on rejoin
-    lda #COOP_SFX_JOIN
-    jmp $c125 ; StartAudioTrack
-++  lda #COOP_SFX_LEAVE ; CoopUpdateP2 despawns player 2 next
-    jmp $c125 ; StartAudioTrack
+++ clc
+   adc #COOP_SFX_LEAVE ; A = 1 join, 0 leave: the join sound is leave + 1
+   jmp $c125 ; StartAudioTrack
 + rts
+.popseg
 
 .ifndef _CHECK_FLAG0
 .ifndef _CTRL1_SHORTCUTS
@@ -282,6 +307,77 @@ CoopStoneCheck:
   nop
   nop
 
+;;; Boss reward chests (v0.3): ObjectActionJump_6c ($b728, bank $0f) waits
+;;; until slots $0d..$1e hold nothing but chests/triggers ($78), $70,
+;;; $7f, people ($30), $39 or empty slots before it spawns the chest.
+;;; Player 2's sprite ($09) and sword ($10) live in those slots, so the
+;;; Rabbit Boots after Vampire 1 only appeared once player 2 left.  Its
+;;; last test ("cmp #$00 / bne bail") now comes here: player 2's slots
+;;; count as empty.  A = the slot's action, Y = the slot.
+.pushseg "0f"
+.reloc
+CoopChestCheck:
+  cmp #$00
+  beq +
+  cpy P2Slot
+  beq +
+  cpy P2SwordSlot
+  beq +
+   pla               ; something else is still there: bail, as vanilla
+   pla
+   jmp $b7bb
++ rts
+.popseg
+.pushseg "0f"
+.org $b75d
+  jsr CoopChestCheck
+  nop
+.popseg
+
+;;; Medical Herb (v0.3): ItemUseJump_MedicalHerb ($84e0, bank $0e) does
+;;; "lda #amount / adc PlayerHP / (clamp) / sta PlayerHP".  The adc comes
+;;; here: if player 1 is already full and player 2 (joined, not down) is
+;;; not, the herb heals player 2 instead and player 1's HP is left as it
+;;; is; otherwise it heals player 1 as usual and CoopHerbFlag keeps that
+;;; heal from being shared (CoopShareHeals).  A = amount, carry clear.
+.pushseg "0e"
+.reloc
+CoopHerbAdd:
+  pha
+  lda $03c1          ; PlayerHP
+  cmp $03c0          ; PlayerMaxHP
+  bcc @p1
+  lda P2Active
+  beq @p1
+  lda P2Down
+  bne @p1
+  lda P2HP
+  cmp P2MaxHP
+  bcs @p1
+  pla
+  clc
+  adc P2HP
+  bcs +
+  cmp P2MaxHP
+  bcc ++
++ lda P2MaxHP
+++ sta P2HP
+  lda $03c1          ; player 1 stays as is
+  clc
+  rts
+@p1:
+  lda #$01
+  sta CoopHerbFlag
+  pla
+  clc
+  adc $03c1
+  rts
+.popseg
+.pushseg "0e"
+.org $84eb
+  jsr CoopHerbAdd
+.popseg
+
 ;;; Calls the bank $0d routine at CoopFarTarget from bank $3a code (use the
 ;;; COOP_FAR macro).  X and Y pass through both ways; A goes in and comes
 ;;; back through CoopFarA; the carry comes back.  The extra call level
@@ -340,7 +436,7 @@ CoopCamera:
 ;;; HUD guard (M3): UpdateHPDisplayInternal ($8cc0, bank $1a) draws
 ;;; PlayerHP into the status bar.  While player 2's hit is handled,
 ;;; PlayerHP holds P2HP, so skip the redraw (CoopNoHud).
-;;; (The guard itself is in the fixed bank: bank $1a has no free space.)
+;;; (The guard is in the fixed bank: bank $1a has no free space.)
 .pushseg "1a"
 .org $8cc2 ; after txa/pha; was lda #$60 / jsr WaitForNametableBufferAvailable
   jsr CoopHpGuard
@@ -474,10 +570,18 @@ CoopFindSlot:
 ;;; Runs the hero actions with player 2 swapped into slots 0 and 1.
 .reloc
 CoopRunP2Actions:
+  ;; ObjectActionJump_01 uses EquippedConsumableItem when B is newly
+  ;; pressed: player 2's swing must not use up player 1's item (v0.3).
+  lda $0715          ; EquippedConsumableItem
+  pha
+  lda #$00
+  sta $0715
   ldx #$00
   COOP_FAR $9d9a ; ObjectActionJump_03
   ldx #$01
   COOP_FAR $9b45 ; ObjectActionJump_01
+  pla
+  sta $0715
   rts
 
 ;;; Terrain under the point $34..$37, for placing player 2 (M2b), using
@@ -689,17 +793,18 @@ COOP_LEASH_X = 176
 COOP_LEASH_Y = 128
 
 ;;; ----------------------------------------------------------------
-;;; Player 2's HP readout (M3b; a bar since v0.2): "2" and a life bar in
-;;; the status bar, 8 tiles of 32 HP each (player 1's are 16 HP).  The
-;;; v0.1 digits "2 Lf HHH/MMM" ran into the enemy HP and MP digits on
-;;; either side, and the testers wanted a bar like player 1's.
+;;; Player 2's HP readout (M3b; a bar since v0.2, framed since v0.3): "2"
+;;; and a life bar in player 1's style ("Lf", the bar, the end cap) on the
+;;; status bar's bottom row.  The bar is max HP / 32 tiles long (at most 7)
+;;; and filled in proportion to HP.  The v0.1 digits "2 Lf HHH/MMM" ran
+;;; into the enemy HP and MP digits on either side.
 ;;;
 ;;; Status bar (nametable $2b00..): row $2b20 is Lf + player 1's bar
 ;;; (17 tiles from $2b23, all redrawn on every change) then Lv and money;
 ;;; row $2b40 is Pw, the charge arrows and the ball indicators, then Dl and
 ;;; Ex; row $2b60 has the enemy HP readout at $2b62..$2b6a (_ENEMY_HP),
 ;;; blanks to $2b75, then Mp.  The enemy name goes on the border row $2b82.
-;;; So player 2's readout uses row 3, $2b6c..$2b74, with the randomizer's
+;;; So player 2's readout uses row 3, $2b6c..$2b75, with the randomizer's
 ;;; HUD layout (_UPDATE_HUD; with the vanilla HUD (Vh) it is not shown).
 ;;;
 ;;; Tiles are staged at $6071..$6079 and queued like UpdateHPDisplayInternal
@@ -707,10 +812,11 @@ COOP_LEASH_Y = 128
 ;;; scrolling (from $6000), player 1's bar and the charge meter
 ;;; ($6060..$6070), the status numbers (from $607b), map rows ($6080..) and
 ;;; the enemy readouts ($60a0, $60b0); $60c0.. is used by Draygon 2.
-;;; Redrawn only when P2HP or P2MaxHP change, plus every 256 frames in
-;;; case a full status bar redraw (menus, map loads) wiped it.
+;;; Redrawn when P2HP or P2MaxHP change, after a full status bar redraw
+;;; (menus, map loads: hud.s clears P2HudState), and every 256 frames.
 .ifdef _UPDATE_HUD
-COOP_HUD_BUF = $71         ; staging offset: $6071..$6079
+COOP_HUD_BUF = $71         ; staging offset: $6071..$607a
+COOP_HUD_TILES = 7         ; bar tiles; with "2", "Lf" and the cap: 10 tiles
 COOP_HUD_PPU_HI = $2b      ; PPU $2b6c
 COOP_HUD_PPU_LO = $6c
 
@@ -726,7 +832,7 @@ CoopP2Hud:
   lda #COOP_HUD_BUF
   jsr $c72b          ; WaitForNametableBufferAvailable
   lda #$20           ; blank tile
-  ldx #$08
+  ldx #COOP_HUD_TILES+2
 -  sta $6000+COOP_HUD_BUF,x
    dex
   bpl -
@@ -752,57 +858,92 @@ CoopP2Hud:
   sta P2HudMax
   lda #COOP_HUD_BUF
   jsr $c72b          ; WaitForNametableBufferAvailable
+  ;; "2", then a bar like player 1's: "Lf" (which draws the frame's left
+  ;; edge), W tiles and the end cap $8d.  W = max HP / 32 rounded up, at
+  ;; most 7; the fill is HP / max HP of the bar in quarter tiles (at least
+  ;; a sliver while HP is left).
   lda #$02           ; "2"
   sta $6000+COOP_HUD_BUF
-  ;; A life bar like player 1's, but 32 HP per tile so 255 fits in 8:
-  ;; CoopTmp = tiles (max HP / 32, rounded up), CoopTmp+1 = full tiles
-  ;; (HP / 32), Y = the tile after them (HP % 32 in quarters).
+  lda #$80           ; "Lf"
+  sta $6000+COOP_HUD_BUF+1
   lda P2MaxHP
+  clc
+  adc #31
+  ror                ; (max + 31) / 2, keeping the carry out of the add
   lsr
   lsr
   lsr
-  lsr
-  lsr
-  sta CoopTmp
+  lsr                ; ceil(max / 32), 0..8
+  cmp #COOP_HUD_TILES+1
+  bcc +
+   lda #COOP_HUD_TILES
++ sta CoopTmp        ; W
+  ;; quarters = HP * 4W / max (16-bit product, 8-bit divisor).
+  asl
+  asl
+  sta CoopTmp+1      ; 4W
+  lda #$00
+  sta CoopHudLo
+  sta CoopHudHi
+  ldx CoopTmp+1
+  beq @divide
+-  lda CoopHudLo
+   clc
+   adc P2HP
+   sta CoopHudLo
+   bcc +
+    inc CoopHudHi
++  dex
+  bne -
+@divide:
+  ldx #$00           ; quotient
   lda P2MaxHP
-  and #$1f
-  beq +
-   inc CoopTmp
-+ lda P2HP
-  lsr
-  lsr
-  lsr
-  lsr
-  lsr
-  sta CoopTmp+1
-  lda P2HP
-  and #$1f
-  lsr
-  lsr
-  lsr
-  tax
-  bne +
-  lda P2HP           ; a little HP left: still show a sliver
-  and #$1f
-  beq +
+  beq @fill
+-  lda CoopHudLo
+   sec
+   sbc P2MaxHP
+   tay
+   lda CoopHudHi
+   sbc #$00
+   bcc @fill
+   sta CoopHudHi
+   sty CoopHudLo
    inx
-+ ldy CoopHudPartial,x
+  bne -
+@fill:
+  txa
+  bne +
+  lda P2HP           ; a little HP left: show a sliver
+  beq +
+   lda #$01
++ sta CoopTmp+1      ; filled quarters
+  ;; Tiles: full ($88) while 4+ quarters are left, then the partial tile
+  ;; for 0..3 quarters ($8c empty .. $89), then the cap, then blanks.
   ldx #$00
 @bar:
-  lda #$88           ; full
-  cpx CoopTmp+1
-  bcc @put
-  lda #$20           ; past the end of the bar: blank
   cpx CoopTmp
-  bcs @put
-  tya                ; partial
-  cpx CoopTmp+1
-  beq @put
-  lda #$8c           ; empty
+  bcs @after
+  lda CoopTmp+1
+  cmp #$04
+  bcc +
+   sbc #$04
+   sta CoopTmp+1
+   lda #$88
+   bne @put
++ tay
+  lda CoopHudPartial,y
+  ldy #$00
+  sty CoopTmp+1
+  jmp @put
+@after:
+  bne +
+   lda #$8d          ; end cap, right after the last tile
+   bne @put
++ lda #$20
 @put:
-  sta $6000+COOP_HUD_BUF+1,x
+  sta $6000+COOP_HUD_BUF+2,x
   inx
-  cpx #$08
+  cpx #COOP_HUD_TILES+1
   bne @bar
 @stage:
   jsr $c43e          ; DisableNMI
@@ -811,7 +952,7 @@ CoopP2Hud:
   sta $6200,x
   lda #COOP_HUD_PPU_LO
   sta $6201,x
-  lda #$09
+  lda #COOP_HUD_TILES+3
   sta $6202,x
   lda #COOP_HUD_BUF
   sta $6203,x
@@ -831,6 +972,9 @@ CoopUpdateP2:
 .ifdef _UPDATE_HUD
   jsr CoopP2Hud
 .endif
+  jsr CoopP1DownCheck
+  jsr CoopP1DownFrame
+  jsr CoopShareHeals
   ;; Player 2 left: remove their object.
   lda P2Active
   bne +
@@ -1500,6 +1644,74 @@ CoopP2Vitals:
   sta $0380,x
   rts
 
+;;; Heals reach player 2 too (v0.3).  Each frame of normal play, compare
+;;; player 1's HP and max HP with the last co-op update:
+;;;  - max HP went up (level up): player 2 gets the same increase in max
+;;;    HP (CoopP2Vitals copies it) and the same HP, as player 1 does;
+;;;  - HP went up by 1 (Refresh adds 1 HP a frame) or by a partial amount:
+;;;    player 2 is healed by the same amount;
+;;;  - HP went up to full (inns, shrines, healers): player 2 is filled up
+;;;    too (a downed player 2 was already revived by the inn's map reload);
+;;;  - a Medical Herb only heals player 1 (CoopHerbAdd heals player 2
+;;;    instead when player 1 is full), so it sets CoopHerbFlag.
+;;; A downed player 2 is skipped: they still need reviving.  The co-op
+;;; update only runs while player 2 is around, so a (re)join resyncs.
+CoopShareHeals:
+  lda P2Rejoined
+  bne @sync
+  lda $03c0          ; PlayerMaxHP
+  sec
+  sbc CoopP1MaxLast
+  beq @noLevel
+  bcc @sync
+  ;; Level up: the same HP increase for player 2.
+  ldx P2Down
+  bne @sync
+  clc
+  adc P2HP
+  bcs +
+  cmp $03c0
+  bcc ++
++ lda $03c0
+++ sta P2HP
+  jmp @sync
+@noLevel:
+  lda $03c1          ; PlayerHP
+  sec
+  sbc CoopP1HPLast
+  beq @sync
+  bcc @sync          ; damage: nothing to share
+  ldx CoopHerbFlag
+  bne @sync
+  ldx P2Active
+  beq @sync
+  ldx P2Down
+  bne @sync
+  cmp #$01
+  beq @add           ; Refresh
+  ldx $03c1
+  cpx $03c0
+  bne @add           ; a partial heal
+  lda P2MaxHP        ; filled up: fill player 2 up too
+  sta P2HP
+  jmp @sync
+@add:
+  clc
+  adc P2HP
+  bcs +
+  cmp P2MaxHP
+  bcc ++
++ lda P2MaxHP
+++ sta P2HP
+@sync:
+  lda #$00
+  sta CoopHerbFlag
+  lda $03c0
+  sta CoopP1MaxLast
+  lda $03c1
+  sta CoopP1HPLast
+  rts
+
 ;;; Player 2 is down: frozen where they fell, blinking, no collisions and
 ;;; no leash.  Player 1 standing within a tile for 60 frames revives them
 ;;; (or the next map: see CoopSpawnP2).
@@ -1538,6 +1750,116 @@ CoopP2DownFrame:
    lda #$ff
    sta $d0,x
 + rts
+
+;;; Player 1 down (v0.3).  When player 1's HP reaches 0 while player 2 is
+;;; joined, on screen and up, player 1 goes down instead of the game being
+;;; over: they keep 1 HP (so the game's own death check, CheckForPlayerDeath
+;;; at $cb84, never fires: no fixed-bank code needed), are frozen with the
+;;; delay stone uses ($05a0) and invincible (so they blink), and lose any
+;;; status (so poison can't take the last HP).  Called right after HP can
+;;; drop: from player 2's update (after the poison tick) and at the start
+;;; of player 2's collision pass (right after the game's collisions).
+CoopP1DownCheck:
+  lda $03c1          ; PlayerHP
+  bne @rts
+  lda P1Down
+  bne @rts
+  lda P2Active
+  beq @rts
+  lda P2Down
+  bne @rts
+  lda P2Slot         ; hidden in a set piece: no one to revive them
+  beq @rts
+  lda #$01
+  sta P1Down
+  sta $03c1          ; 1 HP while down
+  sta CoopP1HPLast   ; (not a heal to share)
+  lda #$00
+  sta P1DownTimer
+  lda $0710          ; no status effects while down
+  and #$f0
+  sta $0710
+  lda $6c            ; CurrentLocation
+  sta P1DownLoc
+  jsr CoopP1Freeze
+  COOP_FAR $8cc0     ; UpdateHPDisplayInternal
+@rts:
+  rts
+
+CoopP1Freeze:
+  lda #$ff
+  sta $05a0          ; ObjectDelay of slot 0: frozen, as stone does
+  lda #$10
+  sta $071a          ; invincible (blinking)
+  rts
+
+;;; Each frame while player 1 is down.  Player 2 standing within a tile for
+;;; a second revives them, as player 1 does for player 2; so does a map
+;;; change.  Player 1 comes back with a quarter of their max HP.  If player
+;;; 2 goes down or leaves, player 1's HP goes to 0 and the game's own death
+;;; check ends the game next frame.  (A Medical Herb player 1 uses on
+;;; themself from the menu also ends it.)
+CoopP1DownFrame:
+  lda P1Down
+  beq @rts
+  lda P2Active
+  beq @over
+  lda P2Down
+  bne @over
+  lda $03c1
+  cmp #$02
+  bcs @healed        ; healed some other way
+  lda $6c
+  cmp P1DownLoc
+  bne @revive
+  jsr CoopP1Freeze
+  jsr CoopSetPAToP1
+  jsr CoopSetPBToP2
+  jsr CoopDist
+  lda CoopDX+1
+  ora CoopDY+1
+  bne @far
+  lda CoopDX
+  cmp #20
+  bcs @far
+  lda CoopDY
+  cmp #20
+  bcs @far
+  inc P1DownTimer
+  lda P1DownTimer
+  cmp #COOP_REVIVE_FRAMES
+  bcs @revive
+@rts:
+  rts
+@far:
+  lda #$00
+  sta P1DownTimer
+  rts
+@over:
+  lda #$00
+  sta P1Down
+  sta $03c1          ; game over at the next death check
+  sta CoopP1HPLast
+  sta $05a0
+  rts
+@revive:
+  lda $03c0          ; PlayerMaxHP
+  lsr
+  lsr
+  bne +
+   lda #$01
++ sta $03c1
+  lda #$3c           ; a second of invincibility
+  sta $071a
+  COOP_FAR $8cc0     ; UpdateHPDisplayInternal
+@healed:
+  lda #$00
+  sta P1Down
+  sta P1DownTimer
+  sta $05a0          ; unfreeze
+  lda $03c1          ; not a heal to share with player 2
+  sta CoopP1HPLast
+  rts
 
 ;;; Back on their feet with a quarter of their max HP.
 CoopReviveP2:
@@ -1586,6 +1908,7 @@ CoopGetSwordSlot:
 ;;; Player 2's collision pass, called after the vanilla one.
 .reloc
 CoopP2Collisions:
+  jsr CoopP1DownCheck  ; right after the game's collisions
   lda P2Down
   bne @exit
   lda $41            ; normal play only

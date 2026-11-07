@@ -89,6 +89,11 @@
 .endif ; _ENEMY_HP
   lda #%01011111 ; update all 5 status display (including difficulty)
   jsr UpdateStatusBarDisplays
+.ifdef _COOP
+  ;; The full redraw wiped player 2's life bar: clear P2HudState (0 or 1,
+  ;; see coop.s) so it is drawn again on the next frame.
+  lsr $62cb ; P2HudState
+.endif
   jmp FlushNametableDataWrite ; WaitForNametableFlush
 FREE_UNTIL $bad9
 
