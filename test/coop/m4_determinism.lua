@@ -51,11 +51,17 @@ local REGIONS = {
   {"6140", 0x6140, 0x627f},
   {"62dc", 0x62dc, 0x63ff}, {"save", 0x6400, 0x7fff},
 }
+-- $24/$25 are a scratch pointer that can be left pointing into a
+-- randomizer data table, and co-op code in banks $0e/$0f moves those tables
+-- (v0.3): same data, different address.  Skip them.
+local SKIP = {[0x24] = true, [0x25] = true}
 local function hashRange(a, b)
   local h = 2166136261
   for x = a, b do
+    if SKIP[x] then goto continue end
     h = h ~ rd(x)
     h = (h * 16777619) % 4294967296
+    ::continue::
   end
   return h
 end

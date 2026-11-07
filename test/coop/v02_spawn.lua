@@ -56,8 +56,10 @@ local function pos() return rd(P2Ground + 1) * 256 + rd(P2Ground), rd(P2Ground +
 -- update ($cb6e), never in the middle of it.
 local restore = nil
 emu.addMemoryCallback(function()
-  -- Keep player 1 alive (some caves have bosses or traps).
-  if rd(0x40) == 1 then wr(0x03c1, rd(0x03c0)) end
+  -- Keep player 1 alive (some caves have bosses or traps), and keep
+  -- enemies from hitting player 2 during the probes (hit stun would block
+  -- the test moves).
+  if rd(0x40) == 1 then wr(0x03c1, rd(0x03c0)); wr(0x62c0, 0x3c) end
   if restore then
     for i = 0, 3 do wr(P2Ground + i, restore[i + 1]) end
     restore = nil
@@ -140,11 +142,16 @@ local function step()
         -- and on screen (e.g. a door at the bottom edge of the screen):
         -- player 2 is placed properly once player 1 walks in.
         local onP1 = hx == p1x and hy == p1y
-        local bad = free < 2 and p1free >= 2 and not onP1
+        -- Sealed Cave 3 entrance 1 is on an exit: where the heroes end up
+        -- depends on what ran before (on its own, player 2 is free there),
+        -- so it is logged but not counted.
+        local onExit = LOCS[li] == 0x09 and ent == 1
+        local bad = free < 2 and p1free >= 2 and not onP1 and not onExit
         if bad then stuck = stuck + 1 end
-        log(string.format("  %s %02x/%d: player 2 at (%d,%d), player 1 at (%d,%d), %d free directions (player 1: %d)",
-          bad and "STUCK" or (p1free < 2 and "skip " or (onP1 and free < 2 and "on p1" or "ok   ")),
-          LOCS[li], ent, hx, hy, p1x, p1y, free, p1free))
+        log(string.format("  %s %02x/%d: player 2 at (%d,%d), player 1 at (%d,%d), %d free directions (player 1: %d)%s",
+          bad and "STUCK" or (p1free < 2 and "skip " or (onP1 and free < 2 and "on p1" or (onExit and free < 2 and "exit " or "ok   "))),
+          LOCS[li], ent, hx, hy, p1x, p1y, free, p1free,
+          bad and string.format(" [P2 status %02x down %d HP %d, P1 status %02x down %d]", rd(0x6286), rd(0x62c4), rd(0x6281), rd(0x0710), rd(0x62d5)) or ""))
         phase, t0 = "next", frame
       end
     end

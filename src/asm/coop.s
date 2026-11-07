@@ -108,24 +108,27 @@ COOP_SFX_LEAVE = $4b   ; SFX_CURSOR_MOVE (= COOP_SFX_JOIN - 1, see below)
 ;;; Called once per frame in game mode 8 (normal play), in place of the
 ;;; usual controller read.  The hook is the tail of CheckFlag0 in flags.s
 ;;; (or $cb62 directly when _CHECK_FLAG0 is off).
-;;; (The work is in bank $3a since v0.3: the fixed bank is full.  Nothing
-;;; that runs between here and the main loop's next bank switch depends on
-;;; what is mapped at $8000: the status display routines save and restore
-;;; the banks, and the start menu switches its own.)
+;;; (Pad 2 is handled in bank $3a since v0.3: the fixed bank is full.  Pad
+;;; 1 is read first, with the banks as the game left them, and the bank at
+;;; $8000 is put back afterwards, so nothing else sees a difference.)
 .reloc
 CoopReadControllers:
-  lda #COOP_BANK
-  jsr BankSwitch8k_8000
-  jmp CoopReadControllersFar
-
-.pushseg "3a"
-.reloc
-CoopReadControllersFar:
 .ifdef _CTRL1_SHORTCUTS
   jsr ReadControllersWithButtonUp
 .else
   jsr ReadControllersWithDirections
 .endif
+  lda $6e            ; PrgPageShadowLo: the bank at $8000
+  pha
+  lda #COOP_BANK
+  jsr BankSwitch8k_8000
+  jsr CoopReadControllersFar
+  pla
+  jmp BankSwitch8k_8000
+
+.pushseg "3a"
+.reloc
+CoopReadControllersFar:
   ;; ReadControllerX uses $4f for its result and $49,x ($4a for x=1) as
   ;; scratch for the DPCM double read.  $4a holds pad 1 button-up state
   ;; under _CTRL1_SHORTCUTS, so save and restore both.
